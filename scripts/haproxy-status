@@ -1,0 +1,304 @@
+#!/usr/bin/env python
+#
+# Copyright 2018 SUNET. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are
+# permitted provided that the following conditions are met:
+#
+#    1. Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#
+#    2. Redistributions in binary form must reproduce the above copyright notice, this list
+#       of conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY SUNET ``AS IS'' AND ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL SUNET OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+# ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# The views and conclusions contained in the software and documentation are those of the
+# authors and should not be interpreted as representing official policies, either expressed
+# or implied, of SUNET.
+#
+# Author: Fredrik Thulin <fredrik@thulin.net>
+#
+
+"""
+Check that haproxy backends are up (up as defined in the 'site' argument string format)
+"""
+
+import os
+import sys
+import socket
+import logging
+import argparse
+
+from logging.handlers import SysLogHandler
+
+class Site(object):
+    """ Wrapper object for parsed haproxy status data """
+    def __init__(self):
+        self.frontend = None
+        self.backend = None
+        self.groups = {}
+
+    def __repr__(self):
+        return 'Site(frontend={!r}, backend={!r}, groups={!r})'.format(
+            self.frontend, self.backend, sorted(self.groups))
+
+    def set_status(self, group, label, value):
+        if label == 'FRONTEND':
+            self.frontend = value
+        elif label == 'BACKEND':
+            self.backend = value
+        else:
+            if group not in self.groups:
+                self.groups[group] = {}
+            self.groups[group][label] = value
+
+
+
+logger = None
+
+_defaults = {'stats_url': 'http://127.0.0.1:9000/haproxy_stats;csv',
+             'syslog': False,
+             'debug': False,
+             'interface': 'lo',
+             }
+
+class HAProxyStatusError(Exception):
+    pass
+
+
+def parse_args(defaults):
+    parser = argparse.ArgumentParser(description = 'haproxy status checker',
+                                     add_help = True,
+                                     formatter_class = argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    parser.add_argument('site',
+                        nargs='+',
+                        metavar='STR',
+                        help='Site to check, in key-value format (e.g. "site=www.dev.eduid.se; min_up=2")',
+    )
+    parser.add_argument('--debug',
+                        dest = 'debug',
+                        action = 'store_true', default = defaults['debug'],
+                        help = 'Enable debug operation',
+    )
+    parser.add_argument('--syslog',
+                        dest = 'syslog',
+                        action = 'store_true', default = defaults['syslog'],
+                        help = 'Enable syslog output',
+    )
+    parser.add_argument('--stats_url',
+                        dest = 'stats_url',
+                        default = defaults['stats_url'],
+                        help = 'haproxy stats URL (CSV format)',
+                        metavar = 'URL',
+    )
+    args = parser.parse_args()
+    return args
+
+
+def haproxy_execute(cmd, args):
+    if args.stats_url.startswith('http'):
+        import requests
+
+        logger.debug('Fetching haproxy stats from {}'.format(args.stats_url))
+        try:
+            data = requests.get(args.stats_url).text
+        except requests.exceptions.ConnectionError as exc:
+            raise HAProxyStatusError('Failed fetching status from {}: {}'.format(args.stats_url, exc))
+    else:
+        socket_fn = args.stats_url
+        if socket_fn.startswith('file://'):
+            socket_fn = socket_fn[len('file://'):]
+        logger.debug('opening AF_UNIX socket {} for command "{}"'.format(socket_fn, cmd))
+        try:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.connect(socket_fn)
+            client.send(cmd + '\n')
+        except Exception as exc:
+            logger.error('Failed sending command to socket {}: {}'.format(socket_fn, exc))
+            return None
+
+        data = ''
+        while True:
+            this = client.recv(1)
+            if not this:
+                break
+            data += this
+
+    logger.debug('haproxy result: {}'.format(data))
+    return data
+
+
+def get_status(args):
+    """
+    haproxy 'show stat' returns _a lot_ of different metrics for each frontend and backend
+    in the system. Parse the returned CSV data and return the 'status' value for
+    frontends and backends, example:
+
+    {'app.example.org': Site(frontend='OPEN',
+                             backend='UP',
+                             groups={'default': {
+                                       'dash-fre-1.eduid.se_v4': 'UP',
+                                       'dash-tug-1.eduid.se_v4': 'UP'
+                                       'failpage': 'no check'},
+                                     'new': {
+                                        'apps-tug-1.eduid.se_v4': 'UP',
+                                        'apps-fre-1.eduid.se_v4': 'UP',
+                                        'failpage': 'no check'}}
+                            ),
+    ...
+
+    :param args:
+    :return: Status dict as detailed above
+    :rtype: dict
+    """
+    data = haproxy_execute('show stat', args)
+    if not data:
+        return None
+    lines = data.split('\n')
+    if not lines[0].startswith('# '):
+        logger.error('Unknown status response from haproxy: {}'.format(data))
+    # The first line is the legend, e.g.
+    # # pxname,svname,qcur,qmax,scur,smax,slim,stot,bin,bout,dreq,...,status,...
+    fields = lines[0][2:].split(',')
+    if len(lines) < 2:
+        logger.warning('haproxy did not return status for any backends: {}'.format(data))
+        return None
+    res = {}
+    # parse all the lines with real data
+    for line in lines[1:]:
+        if not line:
+            continue
+        values = line.split(',')
+        if len(values) != len(fields):
+            logger.warning('Values ({}) does not match legend ({}): {}'.format(len(values), len(fields), line))
+            continue
+        site = values[0]
+        group = 'default'
+        logger.debug('processing site {!r}'.format(site))
+        if '__' in site:
+            site, group = site.split('__')
+        label = values[1]
+
+        # Pick out the data we're interested in
+        status = None
+        for i in range(len(fields)):
+            if fields[i] == 'status':
+                status = values[i]
+                break
+
+        this = res.get(site, Site())
+        this.set_status(group, label, status)
+        res[site] = this
+
+    logger.debug('Parsed status: {}'.format(res))
+
+    return res
+
+
+def check_site(site, group, status, params):
+    group_backends = status[site].groups.get(group)
+    logger.debug('Processing site {}, group {}, params {}, backends {}'.format(
+        site, group, params, group_backends))
+    backends_up = []
+    if group_backends:
+        backends_up = [x for x in group_backends.keys() if group_backends[x] == 'UP']
+    logger.debug('Backends UP: {}'.format(backends_up))
+    up = len(backends_up)
+    min_up = params.get('min_up', 1)
+    if up < int(min_up):
+        logger.debug('Fewer than {} backends up ({})'.format(min_up, up))
+        if group_backends:
+            no_check = [x for x in group_backends.keys() if group_backends[x] == 'no check']
+            if len(no_check) == len(group_backends):
+                return ['NOCHECK site={}, group={}, backends_up={}'.format(site, group, up)]
+        return ['DOWN    site={}, group={}, backends_up={}'.format(site, group, up)]
+    return ['UP      site={}, group={}, backends_up={}'.format(site, group, up)]
+
+
+def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = _defaults):
+    if not args:
+        args = parse_args(defaults)
+
+    global logger
+    # initialize various components
+    if logger_in:
+        logger = logger_in
+    else:
+        logger = logging.getLogger(myname)
+        if args.debug:
+            logger.setLevel(logging.DEBUG)
+            # log to stderr when debugging
+            formatter = logging.Formatter('%(asctime)s %(name)s %(threadName)s: %(levelname)s %(message)s')
+            stream_h = logging.StreamHandler(sys.stderr)
+            stream_h.setFormatter(formatter)
+            logger.addHandler(stream_h)
+    if args.syslog:
+        syslog_h = SysLogHandler(address='/dev/log')
+        formatter = logging.Formatter('%(name)s: %(levelname)s %(message)s')
+        syslog_h.setFormatter(formatter)
+        logger.addHandler(syslog_h)
+
+
+    try:
+        status = get_status(args)
+    except HAProxyStatusError as exc:
+        logger.error(exc)
+        return False
+
+    if not status:
+        return False
+
+    output = []
+    if args.site[0].lower() == 'all':
+        args.site = []
+        for k,v in status.items():
+            for group in v.groups.keys():
+                args.site += ['site={}; group={}'.format(k, group)]
+    for this in sorted(args.site):
+        params = {}
+        if '=' in this:
+            # Parse strings such as 'site=www.dev.eduid.se; group=testing'
+            for kv in this.split(';'):
+                k, v = kv.split('=')
+                k = k.strip()
+                v = v.strip()
+                params[k] = v
+        else:
+            params = {'site': this}
+        logger.debug('Parsed params {}'.format(params))
+        site = params['site']
+        group = 'default' if not 'group' in params else params['group']
+        if site not in status:
+            logger.debug('Site {} not found in haproxy status'.format(site))
+            continue
+        res = check_site(site, group, status, params)
+        if res:
+            output += res
+
+    print('\n'.join(output))
+    return output != []
+
+
+if __name__ == '__main__':
+    try:
+        progname = os.path.basename(sys.argv[0])
+        res = main(progname)
+        if res is True:
+            sys.exit(0)
+        if res is False:
+            sys.exit(1)
+        sys.exit(int(res))
+    except KeyboardInterrupt:
+        sys.exit(0)

@@ -1,0 +1,32 @@
+#!/bin/bash
+#
+# Generate haproxy configuration whenever a change to one of the inputs for said
+# generation is detected.
+#
+
+cfgfile='/etc/haproxy/haproxy.cfg'
+
+rm -f "${cfgfile}.new"
+
+while [ 1 ]; do
+    /opt/frontend/scripts/frontend-config $* print_haproxy_config > /etc/haproxy/haproxy.cfg.new
+
+    changed=0
+    if [ -s /etc/haproxy/haproxy.cfg.new ]; then
+	cmp --quiet "${cfgfile}.new" "${cfgfile}" || changed=1
+	if [ $changed -ne 0 ]; then
+	    echo "haproxy config changed:";
+	    diff -u "${cfgfile}" "${cfgfile}.new"
+	    # this mv will inotify-trigger the autoreload.sh in the haproxy container to reload haproxy
+	    mv "${cfgfile}.new" "${cfgfile}"
+	else
+	    echo "haproxy config did not change"
+	fi
+    fi
+
+    sleep 1  # spin control
+
+    # The only things volume-mounted into these directories in the container where this runs
+    # should be specific to this instance, so we're not triggering off updates to other instances
+    inotifywait -q -r -e moved_to -e close_write /opt/frontend/api/backends /opt/frontend/config
+done

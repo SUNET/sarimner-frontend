@@ -1,0 +1,36 @@
+[Unit]
+Description=Särimner frontend instance www (site www.example.org)
+After=docker.service
+BindsTo=docker.service
+Conflicts=shutdown.target reboot.target halt.target
+
+[Service]
+TimeoutStartSec=0
+TimeoutStopSec=30
+Restart=always
+RestartSec=10
+
+SyslogIdentifier=frontend-www
+
+WorkingDirectory=/
+
+# To make docker-compose pull work with basic-auth credentials
+Environment="HOME=/root"
+
+ExecStartPre=-/usr/local/bin/docker-compose -f /opt/frontend/config/www/docker-compose.yml down
+ExecStartPre=-/usr/local/bin/docker-compose -f /opt/frontend/config/www/docker-compose.yml kill
+ExecStartPre=-/usr/local/bin/docker-compose -f /opt/frontend/config/www/docker-compose.yml rm
+ExecStartPre=-/usr/local/bin/docker-compose -f /opt/frontend/config/www/docker-compose.yml rm -f
+#ExecStartPre=-/usr/local/bin/docker-compose -f /opt/frontend/config/www/docker-compose.yml pull
+
+ExecStart=/usr/local/bin/docker-compose -f /opt/frontend/config/www/docker-compose.yml up --force-recreate --no-deps
+
+ExecStop=/usr/local/bin/docker-compose -f /opt/frontend/config/www/docker-compose.yml stop
+
+ExecStartPost=-/opt/frontend/scripts/container-network-config www
+
+NotifyAccess=all
+
+
+[Install]
+WantedBy=multi-user.target

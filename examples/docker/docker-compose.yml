@@ -1,0 +1,78 @@
+#
+# Example docker-compose file for a site called 'www.example.org'.
+#
+# The instance name is 'www' which is reflected in a number of volume mounts,
+# environment variables and docker network bridge name (br-www).
+#
+---
+version: '3'
+
+services:
+
+  haproxy:
+    image: 'docker.sunet.se/library/haproxy:latest'
+    expose:
+      - "443"
+    restart: always
+    volumes:
+      - '/dev/log:/dev/log'
+      - '/etc/dehydrated:/etc/dehydrated:ro'  # XXX reduce to only necessary set of files later
+      - '/etc/ssl:/etc/ssl:ro'                # XXX reduce to only necessary set of files later
+      - '/opt/frontend/scripts/haproxy-start.sh:/haproxy-start.sh:ro'
+      - 'haproxy_data:/etc/haproxy'
+      - 'haproxy_control:/var/run/haproxy-control'
+    depends_on:
+      - config
+    environment:
+      - 'WAIT_FOR_INTERFACE=sarimner0'
+      - 'WAIT_FOR_CONTAINER=varnish'
+    command: /haproxy-start.sh
+
+  varnish:
+    image: 'docker.sunet.se/library/varnish:latest'
+    expose:
+      - "1080"
+    volumes:
+      - /opt/frontend/config/common/default.vcl:/etc/varnish/default.vcl:ro
+    command: varnishd -F -f /etc/varnish/default.vcl -s malloc,100M -a 0.0.0.0:1080
+    restart: always
+    depends_on:
+      - haproxy
+
+  config:
+    image: 'docker.sunet.se/frontend/frontend-tools:latest'
+    restart: always
+    volumes:
+      - /opt/frontend/scripts:/opt/frontend/scripts:ro
+      - /opt/frontend/config/common:/opt/frontend/config/common:ro
+      - /opt/frontend/config/www:/opt/frontend/config/www:ro
+      - /opt/frontend/api/backends/www.example.org:/opt/frontend/api/backends/www.example.org:ro
+      - haproxy_data:/etc/haproxy
+    command: /opt/frontend/scripts/generate-haproxy-config --debug --instance www --haproxy_template www/haproxy.j2
+
+  monitor:
+    image: 'docker.sunet.se/frontend/frontend-tools:latest'
+    restart: always
+    volumes:
+      - /opt/frontend/scripts:/opt/frontend/scripts:ro
+      - /opt/frontend/config/common:/opt/frontend/config/common:ro
+      - /opt/frontend/config/www:/opt/frontend/config/www:ro
+      - /opt/frontend/monitor/www:/opt/frontend/monitor/www:rw
+      - haproxy_control:/var/run/haproxy-control
+    command: /opt/frontend/scripts/monitor-haproxy --stats_url /var/run/haproxy-control/stats 'site=www.example.org;group=default'
+    environment:
+      - 'HOSTFQDN=fe1.example.org'
+      - 'INSTANCE=www'
+      - 'SITENAME=www.example.org'
+    depends_on:
+      - haproxy
+
+volumes:
+  haproxy_data:
+  haproxy_control:
+
+# Provide user-friendly name of bridge interface
+networks:
+  default:
+    driver_opts:
+      com.docker.network.bridge.name: br-www

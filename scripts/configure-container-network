@@ -1,0 +1,98 @@
+#!/bin/bash
+#
+# Add all anycasted IP addresses for a frontend instance to it's network namespace.
+#
+# The network namespace used is the one of the haproxy container for the instance
+# specified as the only argument.
+#
+# This script sets up a virtual ethernet 'cable' into the container namespace.
+# The outside end is called e.g. www0 for instance www, and the inside end is
+# always called sarimner0.
+#
+# The haproxy-start.sh script waits for sarimner0 to come up before actually
+# starting haproxy.
+#
+
+INSTANCE=$1
+
+if [[ ! $INSTANCE ]]; then
+    echo "Syntax: ${0} instance"
+    exit 1
+fi
+
+SCRIPTSDIR=$(dirname $0)
+SITE_NAME=$(${SCRIPTSDIR}/frontend-config --instance ${INSTANCE} print_site_name)
+if [[ ! ${SITE_NAME} ]]; then
+    echo "$0: Could not get site_name for instance ${INSTANCE} using ${SCRIPTSDIR}/frontend-config"
+    exit 1
+fi
+
+CONTAINER="${INSTANCE}_haproxy_1"
+for retry in $(seq 20); do
+    DOCKERPID=$(docker inspect '--format={{ .State.Pid }}' ${CONTAINER})
+    if [[ $DOCKERPID && $DOCKERPID != 0 ]]; then
+	break
+    fi
+    echo "$0: Container ${CONTAINER} not found (attempt ${retry}/20)"
+    sleep 2
+done
+
+if [[ ! $DOCKERPID || $DOCKERPID == 0 ]]; then
+    echo "$0: Could not find PID of docker container ${CONTAINER}"
+    exit 1
+fi
+
+NSPID=${DOCKERPID}
+
+mkdir -p /var/run/netns
+rm -f /var/run/netns/${INSTANCE}
+ln -s /proc/${NSPID}/ns/net /var/run/netns/${INSTANCE}
+
+echo "Container ${CONTAINER} has pid ${DOCKERPID} - symlinking /var/run/netns/${INSTANCE} to /proc/${NSPID}/ns/net"
+
+VETHHOST="${INSTANCE}0"
+VETHCONTAINER="veth1${INSTANCE}"
+
+set -x
+
+# Enable IPv6 forwarding. Should ideally be done more selectively, but...
+sysctl net.ipv6.conf.all.forwarding=1
+
+# Add a pair of virtual ethernet interfaces (think of them as a virtual cross-over ethernet cable)
+ip link add name ${VETHHOST} mtu 1500 type veth peer name ${VETHCONTAINER} mtu 1500
+ip link set ${VETHHOST} master br-${INSTANCE}
+ip link set ${VETHHOST} up
+
+# Move one end of the virtual ethernet cable inside the network namespace of the docker container
+ip link set ${VETHCONTAINER} netns ${INSTANCE} || {
+    echo "$0: FAILED to configure namespace, did ${CONTAINER} (pid ${DOCKERPID}) die?"
+    exit 1
+}
+ip netns exec ${INSTANCE} ip link set ${VETHCONTAINER} name sarimner0
+
+# Docker likes to disable IPv6
+ip netns exec ${INSTANCE} sysctl net.ipv6.conf.sarimner0.disable_ipv6=0
+# DAD interferes with haproxy's first bind() of the IPv6 addresses,
+# and should really not be needed inside the namespace
+ip netns exec ${INSTANCE} sysctl net.ipv6.conf.sarimner0.accept_dad=0
+# Allow bind to IP address before it is configured.
+# XXX Disabled since I can't decide if that would be a bug or a feature in this case.
+# ip netns exec ${INSTANCE} sysctl net.ipv4.ip_nonlocal_bind=1
+# ip netns exec ${INSTANCE} sysctl net.ipv6.ip_nonlocal_bind=1
+
+# Add IPv6 default gateway
+#sysctl net.ipv6.conf.${VETHHOST}.accept_dad=0
+v6gw=$(ip -6 addr list br-${INSTANCE} | awk '/inet6/{print $2}' | head -1 | awk -F / '{print $1}')
+if [[ $v6gw ]]; then
+    ip netns exec ${INSTANCE} ip -6 route add default via ${v6gw} dev sarimner0
+else
+    echo "Can't set up IPv6 routing from container, device ${VETHHOST} has no IPv6 address"
+fi
+
+# Add IP addresses to the network namespace of the docker container
+for IP in $(${SCRIPTSDIR}/frontend-config --instance ${INSTANCE} print_ips); do
+    ip netns exec ${INSTANCE} ip addr add ${IP} dev sarimner0
+    ip route add ${IP} dev br-${INSTANCE}
+done
+
+ip netns exec ${INSTANCE} ip link set sarimner0 up

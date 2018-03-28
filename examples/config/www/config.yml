@@ -1,0 +1,29 @@
+#
+# Example configuration for the frontend instance 'www'.
+#
+# This file should only be read with frontend-config - do not rely on it's format!
+#
+---
+  site_name: www.example.org
+  frontends:
+    fe1.example.org:
+      ips:
+        - "192.0.2.4"
+        - "2001:6b0:7::4"
+    fe2.example.org:
+      ips:
+        - "192.0.2.5"
+        - "2001:6b0:7::5"
+  backends:
+    default:
+      www-backend-1.example.org:
+        ips:
+          - "192.0.2.200"
+        server_args: "ssl check verify none"
+  csp_ext_src: "https://example.org https://www.example.org"
+  allow_ports:
+    - 443
+  letsencrypt_server: acme-c.example.org
+  varnish_imagetag: latest
+  haproxy_imagetag: latest
+  tls_certificate_bundle: /etc/dehydrated/certs/www.example.org.pem

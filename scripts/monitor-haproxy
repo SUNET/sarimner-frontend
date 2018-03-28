@@ -1,0 +1,64 @@
+#!/bin/bash
+#
+# Check the status of the haproxy backends every ${INTERVAL} seconds.
+#
+# Every time a change in status is detected, frontend-config is used to generate
+# a new exabgp-announce file for this frontend instance.
+#
+# The exabgp monitor script will notice this updated status immediately (by watching
+# for file change events using inotify) and update it's announcements of this instances
+# frontend IP addresses.
+#
+
+if [[ ! $HOSTFQDN ]]; then
+    echo "$0: ERROR: Environment variable HOSTFQDN not provided"
+    exit 1
+fi
+if [[ ! $INSTANCE ]]; then
+    echo "$0: ERROR: Environment variable INSTANCE not provided"
+    exit 1
+fi
+
+INTERVAL=${INTERVAL-'10'}
+STATUSFN=${STATUSFN-'/var/run/haproxy-status'}
+OUTFILE=${OUTFILE-"/opt/frontend/monitor/${INSTANCE}/announce"}
+STATSSOCKET=${STATSSOCKET-'/var/run/haproxy-control/stats'}
+
+for retry in $(seq 20); do
+    if [ -S ${STATSSOCKET} ]; then
+	/opt/frontend/scripts/haproxy-status $* > ${STATUSFN}
+	grep -qe ^UP -e ^DOWN ${STATUSFN} && break
+    fi
+    echo "$0: haproxy status socket ${STATSSOCKET} not found (attempt ${retry}/20)"
+    sleep 2
+done
+
+test -S ${STATSSOCKET} || {
+    echo "$0: Could not find haproxy status socket ${STATSSOCKET} - is the haproxy container not running?"
+    exit 1
+}
+
+echo "$0: Startup status is `cat ${STATUSFN}`"
+
+status=$(cat ${STATUSFN} | awk '{print $1}')
+/opt/frontend/scripts/frontend-config --debug --fqdn ${HOSTFQDN} --status ${status} --instance ${INSTANCE} print_exabgp_announce > ${OUTFILE}.new
+mv ${OUTFILE}.new ${OUTFILE}
+
+while [ 1 ]; do
+    /opt/frontend/scripts/haproxy-status $* > ${STATUSFN}.new
+    changed=0
+    cmp --quiet "${STATUSFN}.new" "${STATUSFN}" || changed=1
+    if [[ $changed == 1 ]]; then
+	mv ${STATUSFN}.new ${STATUSFN}
+	echo "$0: Status changed to `cat ${STATUSFN}`"
+
+	status=$(cat ${STATUSFN} | awk '{print $1}')
+	/opt/frontend/scripts/frontend-config --debug --fqdn ${HOSTFQDN} --status ${status} --instance ${INSTANCE} print_exabgp_announce > ${OUTFILE}.new
+	mv ${OUTFILE}.new ${OUTFILE}
+	cat ${OUTFILE}
+    fi
+
+    sleep ${INTERVAL}
+
+    sleep 1  # spin control
+done

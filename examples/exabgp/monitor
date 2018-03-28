@@ -1,0 +1,24 @@
+#!/bin/bash
+#
+# TODO: Realize when an announce file is stale (the site has been removed,
+#       or is not running)
+# TODO: There is a race in that if two sites change state at the
+#       same time, only one of the MOVED_TO events will be detected.
+#       Probably need to re-implement this in Python to solve that.
+
+basedir='/opt/frontend'
+
+# initial announce of everything on startup
+cat "${basedir}"/monitor/*/announce
+
+while [ 1 ]; do
+    # Wait for MOVED_TO events recursively in ${basedir}/monitor/.
+    # The point of doing it recursively is to also notice added sites.
+    out=$(inotifywait -e moved_to -r "${basedir}/monitor/")
+    dir=$(echo $out | awk '/MOVED_TO announce$/{print $1}')
+    if [[ $dir != '' ]]; then
+	cat "${dir}/announce"
+    else
+	sleep 1  # spin control
+    fi
+done

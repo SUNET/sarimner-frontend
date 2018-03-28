@@ -1,0 +1,40 @@
+{% extends 'common/haproxy_base.j2' %}
+
+{% from "common/haproxy_macros.j2" import bind_ip_tls, web_security_options, acme_challenge, csp %}
+
+{% block frontend %}
+frontend {{ site_name }}
+    {{ bind_ip_tls(bind_ips, 443, tls_certificate_bundle) }}
+
+    stats enable
+    timeout http-request 10s
+    timeout http-keep-alive 4s
+    option forwardfor
+    http-request set-header X-Forwarded-Proto https
+
+    {{ web_security_options(['no_frames', 'block_xss', 'hsts', 'no_sniff']) }}
+
+    {{ csp(["default-src "               + [csp_ext_src]|join(' '),
+	    "style-src 'unsafe-inline' " + [csp_ext_src]|join(' '),
+	    ]) }}
+
+    {{ acme_challenge() }}
+
+    use_backend {{ site_name }}__varnish
+
+frontend {{ site_name }}__varnish
+    # port 1080 is what Varnish uses as backend
+    bind 0.0.0.0:1080
+    use_backend {{ site_name }}__default
+
+{% endblock frontend %}
+
+{% block pre_backend %}
+backend {{ site_name }}__varnish
+    server {{ site_name }}_varnish varnish:1080
+{% endblock pre_backend %}
+
+{% block backend %}
+# Can't add a SERVERID cookie for www - it will disable Varnish caching
+{{ output_backends(backends, config=[]) }}
+{% endblock backend %}

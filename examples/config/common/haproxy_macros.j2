@@ -1,0 +1,77 @@
+#
+# Macros
+#
+
+{%- macro bind_ip_tls(bind_ips, port, tls_cert) -%}
+{%- for ip in bind_ips %}
+    bind {{ ip }}:{{ port }} ssl crt {{ tls_cert }}
+{%- endfor %}
+{%- endmacro %}
+
+
+{%- macro web_security_options(list) -%}
+{%- for this in list %}
+{%- if this == 'no_frames' %}
+    # Do not allow rendering the site within an frame, which prevents clickjacking.
+    http-response set-header X-Frame-Options "DENY"
+
+{% endif %}
+{%- if this == 'block_xss' %}
+    # Enable browser supplied XSS-protection, even if has been turned off.
+    # If XSS is detected by the browser, block it instead of trying to sanitize it.
+    http-response set-header X-XSS-Protection "1; mode=block"
+
+{% endif %}
+{%- if this == 'hsts' %}
+    # 20 years in seconds is 630720000 (86400 * 365 * 20)
+    http-response set-header Strict-Transport-Security "max-age=630720000"
+
+{% endif %}
+{%- if this == 'no_sniff' %}
+    # Prevent MIME-confusion attacks that can lead to e.g. XSS
+    http-response set-header X-Content-Type-Options "nosniff"
+
+{% endif %}
+{%- if this == 'no_cache' %}
+    # The information is intended for a single user and must not
+    # be cached by a shared cache and should always be revalidated.
+    http-response set-header Cache-Control "no-cache, no-store, must-revalidate"
+    http-response set-header Pragma "no-cache"
+    http-response set-header Expires "0"
+
+{% endif %}
+{%- endfor %}
+{%- endmacro %}
+
+
+{%- macro acme_challenge() -%}
+{%- if letsencrypt_server is defined %}
+    use_backend letsencrypt_{{ letsencrypt_server }} if { path_beg /.well-known/acme-challenge/ }
+{%- else %}
+    # No letsencrypt_server specified
+{%- endif %}
+{%- endmacro %}
+
+{%- macro csp(data) -%}
+    # Content Security Policy
+    http-response set-header Content-Security-Policy "{{ data|join('; ') }}"
+{%- endmacro %}
+
+{%- macro output_backends(backends, config=[], server_args='') -%}
+{% if backends is defined %}
+{%- for this in backends %}
+backend {{ this.name }}
+  {{ config|join('\n  ') }}
+  {%- for server in this.servers %}
+  {%- if server.server_args is defined %}
+  {%-   set server_args = server.server_args %}
+  {%- endif %}
+  {% if server is defined %}
+  server {{ server.server }}_{{ server.address_family }} {{ server.ip }}:{{ server.port }} {{ server_args }}
+  {%- endif %}
+  {%- endfor %}
+{%- endfor %}
+{% else %}
+# No backends found in context
+{% endif %}
+{%- endmacro %}

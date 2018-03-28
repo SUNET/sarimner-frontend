@@ -1,0 +1,90 @@
+# haproxy for SUNET frontend load balancer nodes.
+#
+{% from "common/haproxy_macros.j2" import output_backends %}
+
+{% block global %}
+global
+    log /dev/log local0
+
+    daemon
+    maxconn 256
+    stats socket /var/run/haproxy-control/stats mode 600
+
+    user haproxy
+    group haproxy
+
+    # Default SSL material locations
+    ca-base /etc/ssl/certs
+    crt-base /etc/ssl/private
+
+    ssl-default-bind-ciphers ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:RSA+AES:RSA+3DES:!aNULL:!MD5:!DSS
+    ssl-default-bind-options no-sslv3
+    tune.ssl.default-dh-param 2048
+
+    spread-checks 20
+{% endblock global %}
+
+
+{% block defaults %}
+defaults
+    log global
+    mode http
+    option httplog
+    option dontlognull
+    option redispatch
+    option forwardfor
+    # funny looking values because recommendation is to have these slightly
+    # above mulitples of three seconds to play nice with TCP resend timers
+    timeout check 5s
+    timeout connect 4s
+    timeout client 17s
+    timeout server 17s
+    timeout http-request 5s
+    balance roundrobin
+{% endblock defaults %}
+
+{% block stats %}
+{% endblock stats %}
+
+
+{% block global_backends %}
+{% if letsencrypt_server is defined %}
+backend letsencrypt_{{ letsencrypt_server }}
+  server letsencrypt_{{ letsencrypt_server }} {{ letsencrypt_server }}:80
+{% else %}
+# letsencrypt_backend not defined
+{% endif %}
+{% endblock global_backends %}
+
+
+{% block https_everything %}
+#
+# Redirect _everything_ to HTTPS
+frontend http-frontend
+    bind 0.0.0.0:80
+    bind :::80
+
+    redirect scheme https code 301 if !{ ssl_fc } ! { path_beg /.well-known/acme-challenge/ }
+{% if letsencrypt_server is defined %}
+    use_backend letsencrypt_{{ letsencrypt_server }} if { path_beg /.well-known/acme-challenge/ }
+{% else %}
+    # letsencrypt_backend not defined
+{% endif %}
+{% endblock https_everything %}
+
+#
+# Frontend section
+#
+{% block frontend %}
+{% endblock frontend %}
+
+
+#
+# Backend section
+#
+{% block pre_backend %}
+{% endblock pre_backend %}
+
+{% block backend %}
+{{ output_backends(backends, config=['cookie SERVERID insert indirect nocache']) }}
+{% endblock backend %}
