@@ -8,6 +8,19 @@ cfgfile='/etc/haproxy/haproxy.cfg'
 
 rm -f "${cfgfile}.new"
 
+pid=0
+
+term_handler() {
+    echo "$0: Received SIGTERM, shutting down ${pid}"
+    if [ $pid -ne 0 ]; then
+	kill -SIGTERM "$pid"
+	wait "$pid"
+    fi
+    exit 143; # 128 + 15 -- SIGTERM
+}
+
+trap 'kill ${!}; term_handler' SIGTERM
+
 while [ 1 ]; do
     /opt/frontend/scripts/frontend-config $* print_haproxy_config > /etc/haproxy/haproxy.cfg.new
 
@@ -28,5 +41,7 @@ while [ 1 ]; do
 
     # The only things volume-mounted into these directories in the container where this runs
     # should be specific to this instance, so we're not triggering off updates to other instances
-    inotifywait -q -r -e moved_to -e close_write /opt/frontend/api/backends /opt/frontend/config
+    inotifywait -q -r -e moved_to -e close_write /opt/frontend/api/backends /opt/frontend/config &
+    pid=${!}
+    wait $pid
 done

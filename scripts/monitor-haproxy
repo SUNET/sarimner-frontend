@@ -44,6 +44,19 @@ status=$(cat ${STATUSFN} | awk '{print $1}')
 /opt/frontend/scripts/frontend-config --debug --fqdn ${HOSTFQDN} --status ${status} --instance ${INSTANCE} print_exabgp_announce > ${OUTFILE}.new
 mv ${OUTFILE}.new ${OUTFILE}
 
+pid=0
+
+term_handler() {
+    echo "$0: Received SIGTERM, shutting down ${pid}"
+    if [ $pid -ne 0 ]; then
+	kill -SIGTERM "$pid"
+	wait "$pid"
+    fi
+    exit 143; # 128 + 15 -- SIGTERM
+}
+
+trap 'kill ${!}; term_handler' SIGTERM
+
 while [ 1 ]; do
     /opt/frontend/scripts/haproxy-status $* > ${STATUSFN}.new
     changed=0
@@ -58,7 +71,9 @@ while [ 1 ]; do
 	cat ${OUTFILE}
     fi
 
-    sleep ${INTERVAL}
+    sleep ${INTERVAL} &
+    pid=$!
+    wait ${pid}
 
     sleep 1  # spin control
 done

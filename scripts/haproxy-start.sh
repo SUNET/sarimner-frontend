@@ -57,12 +57,32 @@ echo "$0: Checking config: ${HAPROXYCFG}"
 
 echo "$0: Config ${HAPROXYCFG} checked OK, starting haproxy-systemd-wrapper"
 /usr/sbin/haproxy-systemd-wrapper -p /run/haproxy.pid -f "${HAPROXYCFG}" &
+pid=$!
+pid2=0
+
+term_handler() {
+    echo "$0: Received SIGTERM, shutting down ${pid}, ${pid2}"
+    if [ $pid -ne 0 ]; then
+	kill -SIGTERM "$pid"
+	wait "$pid"
+    fi
+    if [ $pid2 -ne 0 ]; then
+	kill -SIGTERM "$pid2"
+	wait "$pid2"
+    fi
+    exit 143; # 128 + 15 -- SIGTERM
+}
+
+trap 'term_handler' SIGTERM
+
 
 while [ 1 ]; do
     echo "$0: Waiting for ${HAPROXYCFG} to be moved-to"
 
     # Block until an inotify event says that the config file was replaced
-    inotifywait -q -e moved_to "${HAPROXYCFG}"
+    inotifywait -q -e moved_to "${HAPROXYCFG}" &
+    pid2=$!
+    wait $pid2
 
     echo "$0: Move-to event triggered, checking config: ${HAPROXYCFG}"
     config_ok=1
