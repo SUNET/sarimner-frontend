@@ -18,7 +18,7 @@ frontend {{ site_name }}
 	    "style-src 'unsafe-inline' " + [csp_ext_src]|join(' '),
 	    ]) }}
 
-    {{ acme_challenge() }}
+    {{ acme_challenge(letsencrypt_server) }}
 
     use_backend {{ site_name }}__varnish
 

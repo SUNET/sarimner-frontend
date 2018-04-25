@@ -44,7 +44,7 @@
 {%- endmacro %}
 
 
-{%- macro acme_challenge() -%}
+{%- macro acme_challenge(letsencrypt_server) -%}
 {%- if letsencrypt_server is defined %}
     use_backend letsencrypt_{{ letsencrypt_server }} if { path_beg /.well-known/acme-challenge/ }
 {%- else %}
