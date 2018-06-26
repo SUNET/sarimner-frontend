@@ -27,18 +27,27 @@ if [[ ! ${SITE_NAME} ]]; then
     exit 1
 fi
 
+# Check for two names to handle more eventualities of how the instances are launced with docker-compose
+# (docker-compose up results in instance_haproxy_1, docker-compose run haproxy results in instance_haproxy_run_1)
 CONTAINER="${INSTANCE}_haproxy_1"
+CONTAINER2="${INSTANCE}_haproxy_run_1"
+
 for retry in $(seq 20); do
-    DOCKERPID=$(docker inspect '--format={{ .State.Pid }}' ${CONTAINER})
+    DOCKERPID=$(docker inspect '--format={{ .State.Pid }}' ${CONTAINER} 2>&1 | grep -v 'No such object')
     if [[ $DOCKERPID && $DOCKERPID != 0 ]]; then
 	break
     fi
-    echo "$0: Container ${CONTAINER} not found (attempt ${retry}/20)"
+    DOCKERPID=$(docker inspect '--format={{ .State.Pid }}' ${CONTAINER2} 2>&1 | grep -v 'No such object')
+    if [[ $DOCKERPID && $DOCKERPID != 0 ]]; then
+	CONTAINER=$CONTAINER2  # fix-up for logging below
+	break
+    fi
+    echo "$0: Container ${CONTAINER}/${CONTAINER2} not found (attempt ${retry}/20)"
     sleep 2
 done
 
 if [[ ! $DOCKERPID || $DOCKERPID == 0 ]]; then
-    echo "$0: Could not find PID of docker container ${CONTAINER}"
+    echo "$0: Could not find PID of docker container ${CONTAINER}/${CONTAINER2}"
     exit 1
 fi
 
