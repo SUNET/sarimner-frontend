@@ -11,13 +11,16 @@ HAPROXYWAITCONTAINER=${HAPROXYWAITCONTAINER-'10'}
 
 if [[ $WAIT_FOR_INTERFACE ]]; then
     for i in $(seq ${HAPROXYWAITIF}); do
-	ip link ls dev "$WAIT_FOR_INTERFACE" | grep -q 'state UP' && break
+	ip link ls dev "$WAIT_FOR_INTERFACE" 2>&1 | grep -q 'state UP' && break
 	echo "$0: Waiting for interface ${WAIT_FOR_INTERFACE} (${i}/${HAPROXYWAITIF})"
 	sleep 1
     done
 
     if ! ip link ls dev "$WAIT_FOR_INTERFACE" | grep -q 'state UP'; then
-	echo "$0: Interface ${WAIT_FOR_INTERFACE} not found after ${HAPROXYWAITIF} seconds"
+	echo "$0: Interface ${WAIT_FOR_INTERFACE} not found after ${HAPROXYWAITIF} seconds - exiting"
+	echo "$0: The interface should have been configured by the script 'configure-container-network'"
+	echo "$0: that should have been executed by the systemd service for this frontend instance."
+	echo "$0: Investigate why it failed, or didn't start in time before this script gave up."
 	exit 1
     fi
 
@@ -32,7 +35,8 @@ for i in $(seq ${HAPROXYWAITCFG}); do
 done
 
 if [ ! -f "${HAPROXYCFG}" ]; then
-    echo "$0: haproxy config not found after ${HAPROXYWAITCFG} seconds: ${HAPROXYCFG}"
+    echo "$0: haproxy config not found after ${HAPROXYWAITCFG} seconds: ${HAPROXYCFG} - exiting"
+    echo "$0: The haproxy config file should have been created by the 'config' container for this frontend instance"
     exit 1
 fi
 
@@ -45,7 +49,7 @@ if [[ $WAIT_FOR_CONTAINER ]]; then
 	sleep 1
     done
     if [[ $seen != 1 ]]; then
-	echo "$0: Host ${WAIT_FOR_CONTAINER} not present after ${HAPROXYWAITCONTAINER} seconds"
+	echo "$0: Container ${WAIT_FOR_CONTAINER} not present after ${HAPROXYWAITCONTAINER} seconds"
 	exit 1
     fi
 fi
