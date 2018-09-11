@@ -57,7 +57,12 @@ fi
 
 echo "$0: Checking config: ${HAPROXYCFG}"
 
-/usr/sbin/haproxy -c -f "${HAPROXYCFG}"
+config_ok=0
+/usr/sbin/haproxy -c -f "${HAPROXYCFG}" && config_ok=1
+if [ $config_ok != 1 ]; then
+    echo "$0: Config ${HAPROXYCFG} NOT OK, exiting"
+    exit 1
+fi
 
 echo "$0: Config ${HAPROXYCFG} checked OK, starting haproxy-systemd-wrapper"
 /usr/sbin/haproxy-systemd-wrapper -p /run/haproxy.pid -f "${HAPROXYCFG}" &
