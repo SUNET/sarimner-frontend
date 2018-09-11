@@ -27,27 +27,28 @@ if [[ ! ${SITE_NAME} ]]; then
     exit 1
 fi
 
-# Check for two names to handle more eventualities of how the instances are launced with docker-compose
-# (docker-compose up results in instance_haproxy_1, docker-compose run haproxy results in instance_haproxy_run_1)
-CONTAINER="${INSTANCE}_haproxy_1"
-CONTAINER2="${INSTANCE}_haproxy_run_1"
+MATCHNAME="${INSTANCE}_haproxy_1"
+MATCHNAME2="${INSTANCE}_haproxy_run_1"
 
-for retry in $(seq 20); do
-    DOCKERPID=$(docker inspect '--format={{ .State.Pid }}' ${CONTAINER} 2>&1 | grep -v 'No such object')
-    if [[ $DOCKERPID && $DOCKERPID != 0 ]]; then
-	break
+num_tries=60
+for retry in $(seq ${num_tries}); do
+    # Check for two names to handle more eventualities of how the instances are launced with docker-compose
+    # (docker-compose up results in instance_haproxy_1, docker-compose run haproxy results in instance_haproxy_run_1)
+    DOCKEROUT=$(docker ps --filter name="${MATCHNAME}" --filter name="${MATCHNAME2}" --format='{{ .ID }}:{{ .Names }}')
+    if [[ $DOCKEROUT ]]; then
+	DOCKERID=$(echo $DOCKEROUT | cut -d : -f 1)
+	CONTAINER=$(echo $DOCKEROUT | cut -d : -f 2)
+	DOCKERPID=$(docker inspect '--format={{ .State.Pid }}' ${DOCKERID} 2>&1 | grep -v 'No such object')
+	if [[ $DOCKERPID && $DOCKERPID != 0 ]]; then
+	    break
+	fi
     fi
-    DOCKERPID=$(docker inspect '--format={{ .State.Pid }}' ${CONTAINER2} 2>&1 | grep -v 'No such object')
-    if [[ $DOCKERPID && $DOCKERPID != 0 ]]; then
-	CONTAINER=$CONTAINER2  # fix-up for logging below
-	break
-    fi
-    echo "$0: Container ${CONTAINER}/${CONTAINER2} not found (attempt ${retry}/20)"
+    echo "$0: Container ${MATCHNAME}/${MATCHNAME2} not found (attempt ${retry}/${num_tries})"
     sleep 2
 done
 
 if [[ ! $DOCKERPID || $DOCKERPID == 0 ]]; then
-    echo "$0: Could not find PID of docker container ${CONTAINER}/${CONTAINER2}"
+    echo "$0: Could not find PID of docker container ${MATCHNAME}/${MATCHNAME2}"
     exit 1
 fi
 
@@ -57,7 +58,7 @@ mkdir -p /var/run/netns
 rm -f /var/run/netns/${INSTANCE}
 ln -s /proc/${NSPID}/ns/net /var/run/netns/${INSTANCE}
 
-echo "Container ${CONTAINER} has pid ${DOCKERPID} - symlinking /var/run/netns/${INSTANCE} to /proc/${NSPID}/ns/net"
+echo "Container ${CONTAINER}/${DOCKERID} has pid ${DOCKERPID} - symlinking /var/run/netns/${INSTANCE} to /proc/${NSPID}/ns/net"
 
 VETHHOST="${INSTANCE}"
 VETHCONTAINER="ve1${INSTANCE}"
