@@ -38,6 +38,11 @@ test -S ${STATSSOCKET} || {
     exit 1
 }
 
+if [[ ! -s ${STATUSFN} ]]; then
+    echo "$0: Could not get status from ${STATSSOCKET} - exiting"
+    exit 1
+fi
+
 echo "$0: Startup status is `cat ${STATUSFN}`"
 
 status=$(cat ${STATUSFN} | awk '{print $1}')
@@ -52,6 +57,10 @@ term_handler() {
 	kill -SIGTERM "$pid"
 	wait "$pid"
     fi
+    echo "$0: Changing any 'announce' in ${OUTFILE} to 'withdraw'"
+    # Don't do in-place edit since exabgp will pick the change up using inotify move-to event
+    sed -e 's/^announce /withdraw /' < ${OUTFILE} > ${OUTFILE}.new
+    mv ${OUTFILE}.new ${OUTFILE}
     exit 143; # 128 + 15 -- SIGTERM
 }
 
