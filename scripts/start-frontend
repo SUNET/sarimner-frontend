@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+#
+# Copyright 2019 SUNET. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without modification, are
+# permitted provided that the following conditions are met:
+#
+#    1. Redistributions of source code must retain the above copyright notice, this list of
+#       conditions and the following disclaimer.
+#
+#    2. Redistributions in binary form must reproduce the above copyright notice, this list
+#       of conditions and the following disclaimer in the documentation and/or other materials
+#       provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY SUNET ``AS IS'' AND ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+# FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL SUNET OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+# ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# The views and conclusions contained in the software and documentation are those of the
+# authors and should not be interpreted as representing official policies, either expressed
+# or implied, of SUNET.
+#
+# Author: Fredrik Thulin <fredrik@thulin.net>
+#
+
+"""
+Start a frontend instance, with locking to not start simultaneously with another instance.
+"""
+import fcntl
+import logging
+import os
+import subprocess
+import sys
+from fcntl import LOCK_EX, LOCK_NB
+from logging.handlers import SysLogHandler
+
+import argparse
+import threading
+import time
+
+_defaults = {'syslog': False,
+             'debug': True,
+             'lockfile': '/var/lock/start-frontend',
+             'lock_retry': 60,
+             }
+
+def parse_args(defaults=None):
+    if defaults is None:
+        defaults = _defaults
+
+    parser = argparse.ArgumentParser(description = 'Särimner instance starter',
+                                     add_help = True,
+                                     formatter_class = argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    # Positional arguments
+    parser.add_argument('basedir',
+                        metavar='DIR',
+                        help='Base directory (should have subdir \'scripts\')',
+    )
+
+    parser.add_argument('name',
+                        metavar='NAME',
+                        help='Name of instance',
+    )
+
+    parser.add_argument('compose_file',
+                        metavar='FILE',
+                        help='Docker Compose file to \'up\'',
+    )
+
+    parser.add_argument('--debug',
+                        dest = 'debug',
+                        action = 'store_true', default=defaults['debug'],
+                        help = 'Enable debug operation',
+    )
+    parser.add_argument('--syslog',
+                        dest = 'syslog',
+                        action = 'store_true', default=defaults['syslog'],
+                        help = 'Enable syslog output',
+    )
+    parser.add_argument('--lockfile',
+                        dest = 'lockfile',
+                        type=str, default=defaults['lockfile'],
+                        help = 'Lock file to acquire',
+    )
+    parser.add_argument('--lock_retry',
+                        dest = 'lock_retry',
+                        type=int, default=defaults['lock_retry'],
+                        help = 'Seconds to wait for a lock before giving up',
+    )
+    args = parser.parse_args()
+    return args
+
+
+def get_logger(myname, args, logger_in=None):
+    # initialize various components
+    if logger_in:
+        logger = logger_in
+    else:
+        # This is the root log level
+        level = logging.INFO
+        if args.debug:
+            level = logging.DEBUG
+        logging.basicConfig(level = level, stream = sys.stderr,
+                            format='%(asctime)s: %(name)s: %(threadName)s %(levelname)s %(message)s')
+        logger = logging.getLogger(myname)
+        # If stderr is not a TTY, change the log level of the StreamHandler (stream = sys.stderr above) to WARNING
+        if not sys.stderr.isatty() and not args.debug:
+            for this_h in logging.getLogger('').handlers:
+                this_h.setLevel(logging.WARNING)
+    if args.syslog:
+        syslog_h = logging.handlers.SysLogHandler()
+        formatter = logging.Formatter('%(name)s: %(levelname)s %(message)s')
+        syslog_h.setFormatter(formatter)
+        logger.addHandler(syslog_h)
+
+    return logger
+
+
+class NetworkConfigThread(threading.Thread):
+
+    def __init__(self, script, name, logger):
+        super(NetworkConfigThread, self).__init__()
+
+        self._script = script
+        self._name = name
+        self._logger = logger
+
+    def run(self):
+        #self._logger.info('Sleeping three seconds')
+        #time.sleep(3)
+        self._logger.info('Starting {} {}'.format(self._script, self._name))
+        res = subprocess.run([self._script, self._name])
+        self._logger.info('Script result: {}'.format(res))
+
+
+def main(myname = 'frontend-config', args = None, logger_in = None):
+    if not args:
+        args = parse_args()
+
+    logger = get_logger(myname, args, logger_in)
+
+    script = os.path.join(args.basedir, 'scripts', 'configure-container-network')
+    if not os.path.isfile(script):
+        logger.error('Incorrect basedir, {} not found'.format(script))
+
+    retry = args.lock_retry
+    with open(args.lockfile, 'w') as lock_fd:
+        logger.info('Acquiring lock')
+
+        locked = False
+        while not locked:
+            try:
+                fcntl.lockf(lock_fd, LOCK_EX | LOCK_NB)
+                locked = True
+            except OSError:
+                retry -= 1
+            if not locked and not retry:
+                logger.error('Failed to acquire lock - exiting')
+                return False
+
+        logger.info('Lock acquired')
+
+        # Spawn thread to set up the containers network
+        child = NetworkConfigThread(script, args.name, logger.getChild('configure-network'))
+        child.daemon = True
+        child.start()
+        time.sleep(1)
+
+        logger.info('Starting instance')
+        os.execv('/usr/local/bin/docker-compose', ['/usr/local/bin/docker-compose',
+                                                    '-f', args.compose_file,
+                                                   'up',
+                                                   '--force-recreate',
+                                                   '--no-deps',
+                                                   ])
+
+if __name__ == '__main__':
+    try:
+        progname = os.path.basename(sys.argv[0])
+        res = main(progname)
+        if res is True:
+            sys.exit(0)
+        if res is False:
+            sys.exit(1)
+        sys.exit(int(res))
+    except KeyboardInterrupt:
+        sys.exit(0)
