@@ -133,7 +133,7 @@ def parse_args(defaults=None):
     )
     parser.add_argument('--compose_bin',
                         dest = 'compose_bin',
-                        type=int, default=defaults['compose_bin'],
+                        type=str, default=defaults['compose_bin'],
                         help = 'Full path to docker-compose binary',
     )
     args = parser.parse_args()
@@ -184,7 +184,7 @@ def manager_process(script, args, q, logger):
                 retry -= 1
                 #logger.debug('Did not get a lock (retry {})'.format(retry))
                 time.sleep(1)
-                if retry % 10 == 0:
+                if retry and (retry % 10 == 0):
                     logger.info('Frontend instance {!r} still waiting for lock ({} seconds left)'.format(
                         args.name, retry
                     ))
