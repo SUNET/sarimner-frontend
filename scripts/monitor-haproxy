@@ -43,9 +43,9 @@ if [[ ! -s ${STATUSFN} ]]; then
     exit 1
 fi
 
-echo "$0: Startup status is `cat ${STATUSFN}`"
+echo "$0: Startup status is `head -1 ${STATUSFN}`"
 
-status=$(cat ${STATUSFN} | awk '{print $1}')
+status=$(head -1 ${STATUSFN} | awk '{print $1}')
 /opt/frontend/scripts/frontend-config --debug --fqdn ${HOSTFQDN} --status ${status} --instance ${INSTANCE} print_exabgp_announce > ${OUTFILE}.new
 mv ${OUTFILE}.new ${OUTFILE}
 echo "$0: Initial announcements:"
@@ -76,7 +76,7 @@ while [ 1 ]; do
 	mv ${STATUSFN}.new ${STATUSFN}
 	echo "$0: Status changed to `cat ${STATUSFN}`"
 
-	status=$(cat ${STATUSFN} | awk '{print $1}')
+	status=$(head -1 ${STATUSFN} | awk '{print $1}')
 	/opt/frontend/scripts/frontend-config --debug --fqdn ${HOSTFQDN} --status ${status} --instance ${INSTANCE} print_exabgp_announce > ${OUTFILE}.new
 	mv ${OUTFILE}.new ${OUTFILE}
 	cat ${OUTFILE}
