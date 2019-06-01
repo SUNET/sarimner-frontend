@@ -31,23 +31,58 @@
 
 """
 Start a frontend instance, with locking to not start simultaneously with another instance.
+
+This is intended to help a systemd based frontend load balancer start more efficiently.
+Systemd starts all frontend services in parallel, which causes a _lot_ of docker containers
+to start simultaneously. This is really poor for performance, so better let the instances
+compete for an exclusive lock and start one at a time.
+
+Since systemd will follow the main process, that process should be the one that runs
+docker-compose up in the foreground. This script therefor starts with forking off a controller
+process, that will acquire the lock. When it acquires the lock, it will send a signal back
+to the main process to start the frontend instance, and then start the network container
+initalisation before releasing the lock again.
+
+
+    PARENT                                   CHILD
+       |
+      fork                                     |
+       |                        -------- acquire lock
+       |                        |              |
+       |                   fail for 1min    success
+       |                        |              |
+       |                 terminate both        |
+       |                parent and child       |
+       |               using an 'exit' cmd     |
+       |                                       |
+       | <------- cmd 'compose_up' ------------|
+       |                                       |
+     execv docker-compose                      |
+                                               |
+                                        run network init
+                                               |
+                                         release lock
+                                               |
+                                             exit
 """
 import fcntl
 import logging
 import os
-import subprocess
 import sys
 from fcntl import LOCK_EX, LOCK_NB
 from logging.handlers import SysLogHandler
+from multiprocessing import Process, Queue
 
 import argparse
-import threading
+import datetime
+import subprocess
 import time
 
-_defaults = {'syslog': False,
+_defaults = {'syslog': True,
              'debug': True,
              'lockfile': '/var/lock/start-frontend',
              'lock_retry': 60,
+             'compose_bin': '/usr/local/bin/docker-compose'
              }
 
 def parse_args(defaults=None):
@@ -75,6 +110,7 @@ def parse_args(defaults=None):
                         help='Docker Compose file to \'up\'',
     )
 
+    # Optional arguments
     parser.add_argument('--debug',
                         dest = 'debug',
                         action = 'store_true', default=defaults['debug'],
@@ -94,6 +130,11 @@ def parse_args(defaults=None):
                         dest = 'lock_retry',
                         type=int, default=defaults['lock_retry'],
                         help = 'Seconds to wait for a lock before giving up',
+    )
+    parser.add_argument('--compose_bin',
+                        dest = 'compose_bin',
+                        type=int, default=defaults['compose_bin'],
+                        help = 'Full path to docker-compose binary',
     )
     args = parser.parse_args()
     return args
@@ -124,36 +165,15 @@ def get_logger(myname, args, logger_in=None):
     return logger
 
 
-class NetworkConfigThread(threading.Thread):
-
-    def __init__(self, script, name, logger):
-        super(NetworkConfigThread, self).__init__()
-
-        self._script = script
-        self._name = name
-        self._logger = logger
-
-    def run(self):
-        #self._logger.info('Sleeping three seconds')
-        #time.sleep(3)
-        self._logger.info('Starting {} {}'.format(self._script, self._name))
-        res = subprocess.run([self._script, self._name])
-        self._logger.info('Script result: {}'.format(res))
-
-
-def main(myname = 'frontend-config', args = None, logger_in = None):
-    if not args:
-        args = parse_args()
-
-    logger = get_logger(myname, args, logger_in)
-
-    script = os.path.join(args.basedir, 'scripts', 'configure-container-network')
-    if not os.path.isfile(script):
-        logger.error('Incorrect basedir, {} not found'.format(script))
-
+def manager_process(script, args, q, logger):
+    """
+    This is the child process that will acquire the exclusive lock, signal the parent
+    to start docker-compose, initialise the container networking and then release the lock.
+    """
+    logger.debug('Starting manager process for frontend instance {!r}'.format(args.name))
     retry = args.lock_retry
     with open(args.lockfile, 'w') as lock_fd:
-        logger.info('Acquiring lock')
+        logger.info('Acquiring lock for frontend instance {!r}'.format(args.name))
 
         locked = False
         while not locked:
@@ -162,25 +182,68 @@ def main(myname = 'frontend-config', args = None, logger_in = None):
                 locked = True
             except OSError:
                 retry -= 1
+                #logger.debug('Did not get a lock (retry {})'.format(retry))
+                time.sleep(1)
+                if retry % 10 == 0:
+                    logger.info('Frontend instance {!r} still waiting for lock ({} seconds left)'.format(
+                        args.name, retry
+                    ))
             if not locked and not retry:
-                logger.error('Failed to acquire lock - exiting')
+                logger.error('Failed to acquire lock in {} seconds - exiting'.format(args.lock_retry))
+                q.put('exit')
                 return False
 
-        logger.info('Lock acquired')
+        logger.info('Lock acquired (frontend instance {!r})'.format(args.name))
+        q.put('compose_up')
 
-        # Spawn thread to set up the containers network
-        child = NetworkConfigThread(script, args.name, logger.getChild('configure-network'))
-        child.daemon = True
-        child.start()
-        time.sleep(1)
+        logger.info('Sleeping three seconds')
+        time.sleep(3)
+        logger.info('Starting {} {}'.format(script, args.name))
+        t1 = datetime.datetime.now()
+        res = subprocess.run([script, args.name])
+        t2 = datetime.datetime.now()
+        logger.info('Frontend instance {!r} network configured in {:2f} seconds'.format(
+            args.name, (t2 - t1).total_seconds()))
+        logger.debug('Network configuration script result: {}'.format(res))
+        q.put('exit')
+    logger.info('Releasing lock and exiting (frontend instance {!r} finished)'.format(args.name))
 
-        logger.info('Starting instance')
-        os.execv('/usr/local/bin/docker-compose', ['/usr/local/bin/docker-compose',
-                                                    '-f', args.compose_file,
-                                                   'up',
-                                                   '--force-recreate',
-                                                   '--no-deps',
-                                                   ])
+
+def main(myname='start-frontend', args=None, logger_in=None):
+    if not args:
+        args = parse_args()
+
+    logger = get_logger(myname, args, logger_in)
+
+    script = os.path.join(args.basedir, 'scripts', 'configure-container-network')
+    if not os.path.isfile(script):
+        logger.error('Incorrect basedir, {} not found'.format(script))
+        return False
+
+    q = Queue()
+    p = Process(target=manager_process, args=(script, args, q, logger.getChild('manager'),))
+    p.start()
+    logger.debug('Started process {}'.format(p))
+
+    while True:
+        logger.debug('Waiting for commands from the manager process...')
+        cmd = q.get()
+        logger.debug('Got command {!r}'.format(cmd))
+        if cmd == 'compose_up':
+            logger.info('Starting frontend instance {!r}'.format(args.name))
+            os.execv(args.compose_bin, [args.compose_bin,
+                                        '-f', args.compose_file,
+                                        'up',
+                                        '--force-recreate',
+                                        '--no-deps',
+                                        ])
+        elif cmd == 'exit':
+            logger.info('Received exit command')
+            return True
+        else:
+            logger.info('Received command {!r} - exiting'.format(cmd))
+            return False
+
 
 if __name__ == '__main__':
     try:
