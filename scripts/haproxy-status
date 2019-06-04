@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Copyright 2018 SUNET. All rights reserved.
 #
@@ -32,37 +32,16 @@
 """
 Check that haproxy backends are up (up as defined in the 'site' argument string format)
 """
+import socket
 
+import argparse
+import logging
 import os
 import sys
-import socket
-import logging
-import argparse
-
 from logging.handlers import SysLogHandler
+from typing import Mapping, Sequence, Iterable
 
-class Site(object):
-    """ Wrapper object for parsed haproxy status data """
-    def __init__(self):
-        self.frontend = None
-        self.backend = None
-        self.groups = {}
-
-    def __repr__(self):
-        return 'Site(frontend={!r}, backend={!r}, groups={!r})'.format(
-            self.frontend, self.backend, sorted(self.groups))
-
-    def set_status(self, group, label, value):
-        if label == 'FRONTEND':
-            self.frontend = value
-        elif label == 'BACKEND':
-            self.backend = value
-        else:
-            if group not in self.groups:
-                self.groups[group] = {}
-            self.groups[group][label] = value
-
-
+from haproxy_status.status import HAProxyStatusError, Site, get_status
 
 logger = None
 
@@ -70,10 +49,46 @@ _defaults = {'stats_url': 'http://127.0.0.1:9000/haproxy_stats;csv',
              'syslog': False,
              'debug': False,
              'interface': 'lo',
+             'statsd_prefix': 'haproxy',
              }
 
-class HAProxyStatusError(Exception):
-    pass
+# Metrics to send along to statsd
+statsd_metrics = {
+    'bin': ('bytes_in', 'c'),
+    'bout': ('bytes_out', 'c'),
+    # the average connect time in ms over the 1024 last requests
+    'ctime': ('avg_connect_time_1024req', 'g'),
+    # number of requests that encountered an error trying to
+    # connect to a backend server. The backend stat is the sum of the stat
+    # for all servers of that backend: ('', 'c'), plus any connection errors not
+    # associated with a particular server (such as the backend having no
+    # active servers).
+    'econ': ('connect_errors', 'c'),
+    # request errors. Some of the possible causes are:
+    # - early termination from the client: ('', 'c'), before the request has been sent.
+    # - read error from the client
+    # - client timeout
+    # - client closed connection
+    # - various bad requests from the client.
+    # - request was tarpitted.
+    'ereq': ('request_errors', 'c'),
+    'hrsp_1xx': ('http_response_1xx', 'c'),
+    'hrsp_2xx': ('http_response_2xx', 'c'),
+    'hrsp_3xx': ('http_response_3xx', 'c'),
+    'hrsp_4xx': ('http_response_4xx', 'c'),
+    'hrsp_5xx': ('http_response_5xx', 'c'),
+    # the average queue time in ms over the 1024 last requests
+    'qtime': ('avg_queue_time_1024req', 'g'),
+    # number of sessions per second over last elapsed second
+    'rate': ('sessions_1s', 'g'),
+    # the average response time in ms over the 1024 last requests (0 for TCP)
+    'rtime': ('response_time_1024req', 'g'),
+    # current sessions
+    'scur': ('num_sessions', 'g'),
+    'smax': ('max_sessions', 'g'),
+    # the average total session time in ms over the 1024 last requests
+    'ttime': ('total_time_last_1024req', 'g'),
+}
 
 
 def parse_args(defaults):
@@ -103,132 +118,81 @@ def parse_args(defaults):
                         help = 'haproxy stats URL (CSV format)',
                         metavar = 'URL',
     )
+    parser.add_argument('--statsd_host',
+                        dest = 'statsd_host',
+                        default = None,
+                        help = 'Send statistics to statsd host',
+                        metavar = 'HOST',
+    )
+    parser.add_argument('--statsd_prefix',
+                        dest = 'statsd_prefix',
+                        default = defaults['statsd_prefix'],
+                        help = 'Statsd name prefix to use',
+                        metavar = 'STR',
+    )
     args = parser.parse_args()
     return args
 
 
-def haproxy_execute(cmd, args):
-    if args.stats_url.startswith('http'):
-        import requests
+def check_site(site: Site, params: Mapping[str, str]) -> Sequence[str]:
+    logger.debug('Processing site {}, params {}'.format(
+        site, params))
+    #logger.debug('RAW UP:')
+    #for this in site.backends_up:
+    #    logger.debug('  {}'.format(this))
+    #logger.debug('RAW SERVERS:')
+    #for this in site.servers:
+    #    logger.debug('  {}'.format(this))
 
-        logger.debug('Fetching haproxy stats from {}'.format(args.stats_url))
-        try:
-            data = requests.get(args.stats_url).text
-        except requests.exceptions.ConnectionError as exc:
-            raise HAProxyStatusError('Failed fetching status from {}: {}'.format(args.stats_url, exc))
-    else:
-        socket_fn = args.stats_url
-        if socket_fn.startswith('file://'):
-            socket_fn = socket_fn[len('file://'):]
-        logger.debug('opening AF_UNIX socket {} for command "{}"'.format(socket_fn, cmd))
-        try:
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client.connect(socket_fn)
-            client.send(cmd + '\n')
-        except Exception as exc:
-            logger.error('Failed sending command to socket {}: {}'.format(socket_fn, exc))
-            return None
-
-        data = ''
-        while True:
-            this = client.recv(1)
-            if not this:
-                break
-            data += this
-
-    logger.debug('haproxy result: {}'.format(data))
-    return data
-
-
-def get_status(args):
-    """
-    haproxy 'show stat' returns _a lot_ of different metrics for each frontend and backend
-    in the system. Parse the returned CSV data and return the 'status' value for
-    frontends and backends, example:
-
-    {'app.example.org': Site(frontend='OPEN',
-                             backend='UP',
-                             groups={'default': {
-                                       'dash-fre-1.eduid.se_v4': 'UP',
-                                       'dash-tug-1.eduid.se_v4': 'UP'
-                                       'failpage': 'no check'},
-                                     'new': {
-                                        'apps-tug-1.eduid.se_v4': 'UP',
-                                        'apps-fre-1.eduid.se_v4': 'UP',
-                                        'failpage': 'no check'}}
-                            ),
-    ...
-
-    :param args:
-    :return: Status dict as detailed above
-    :rtype: dict
-    """
-    data = haproxy_execute('show stat', args)
-    if not data:
-        return None
-    lines = data.split('\n')
-    if not lines[0].startswith('# '):
-        logger.error('Unknown status response from haproxy: {}'.format(data))
-    # The first line is the legend, e.g.
-    # # pxname,svname,qcur,qmax,scur,smax,slim,stot,bin,bout,dreq,...,status,...
-    fields = lines[0][2:].split(',')
-    if len(lines) < 2:
-        logger.warning('haproxy did not return status for any backends: {}'.format(data))
-        return None
-    res = {}
-    # parse all the lines with real data
-    for line in lines[1:]:
-        if not line:
-            continue
-        values = line.split(',')
-        if len(values) != len(fields):
-            logger.warning('Values ({}) does not match legend ({}): {}'.format(len(values), len(fields), line))
-            continue
-        site = values[0]
-        group = 'default'
-        logger.debug('processing site {!r}'.format(site))
-        if '__' in site:
-            site, group = site.split('__')
-        label = values[1]
-
-        # Pick out the data we're interested in
-        status = None
-        for i in range(len(fields)):
-            if fields[i] == 'status':
-                status = values[i]
-                break
-
-        this = res.get(site, Site())
-        this.set_status(group, label, status)
-        res[site] = this
-
-    logger.debug('Parsed status: {}'.format(res))
-
-    return res
-
-
-def check_site(site, group, status, params):
-    group_backends = status[site].groups.get(group)
-    logger.debug('Processing site {}, group {}, params {}, backends {}'.format(
-        site, group, params, group_backends))
-    backends_up = []
-    if group_backends:
-        backends_up = [x for x in group_backends.keys() if group_backends[x] == 'UP']
-    logger.debug('Backends UP: {}'.format(backends_up))
-    up = len(backends_up)
+    # 'act' in haproxy CSV format is
+    #   act [..BS]: number of active servers (backend), server is active (server)
+    logger.debug('Backends UP: {}'.format([x.act for x in site.backends_up]))
+    up = sum([int(x.act) for x in site.backends_up])
     min_up = params.get('min_up', 1)
     if up < int(min_up):
         logger.debug('Fewer than {} backends up ({})'.format(min_up, up))
-        if group_backends:
-            no_check = [x for x in group_backends.keys() if group_backends[x] == 'no check']
-            if len(no_check) == len(group_backends):
-                return ['NOCHECK site={}, group={}, backends_up={}'.format(site, group, up)]
-        return ['DOWN    site={}, group={}, backends_up={}'.format(site, group, up)]
-    return ['UP      site={}, group={}, backends_up={}'.format(site, group, up)]
+        no_check = [x for x in site.servers if x.status == 'no check']
+        if len(no_check) == len(site.servers):
+            return ['NOCHECK site={}, group={}, backends_up={}'.format(site.site_name, site.group, up)]
+        return ['DOWN    site={}, group={}, backends_up={}'.format(site.site_name, site.group, up)]
+    return ['UP      site={}, group={}, backends_up={}'.format(site.site_name, site.group, up)]
 
 
-def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = _defaults):
+def send_to_statsd(prefix: str, status: Iterable[Site], host: str, logger: logging.Logger, port: int=8125) -> None:
+    while prefix and prefix.endswith('.'):
+        prefix=prefix[:1]
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    for site in status:
+        data = b''
+        count = 0
+        for server in site.servers:
+            # Replace dots in server names with underscores, since dots are separators in statsd
+            this_prefix = prefix + '.{}.{}'.format(server.pxname.replace('.', '_'),
+                                                   server.svname.replace('.', '_'))
+
+            for name, spec in statsd_metrics.items():
+                stat_name, stat_type, = spec
+                value = getattr(server, name, 0)
+                if not value:
+                    logger.debug('No value for stat {}/{}'.format(name, stat_name))
+                    continue
+                value = int(value)
+                encoded = '{prefix}.{name}:{value}|{typ}\n'.format(
+                    prefix=this_prefix, name=stat_name, value=value, typ=stat_type
+                ).encode()
+                data += encoded
+                logger.debug('STAT {} {}'.format(name, encoded))
+                count += 1
+            logger.debug('Sending {} bytes ({} stats) to {} port {}'.format(len(data), count, host, port))
+            sock.sendto(data, (host, port))
+
+
+def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = None):
     if not args:
+        if defaults is None:
+            defaults = _defaults
         args = parse_args(defaults)
 
     global logger
@@ -257,7 +221,11 @@ def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = _d
             logger.addHandler(stream_h)
 
     try:
-        status = get_status(args)
+        status = get_status(args.stats_url, logger)
+        if args.debug:
+            logger.debug('HAProxy status:'.format(status))
+            for this in status:
+                logger.debug('  {} - {}'.format(this.name, this))
     except HAProxyStatusError as exc:
         logger.error(exc)
         return False
@@ -268,9 +236,10 @@ def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = _d
     output = []
     if args.site[0].lower() == 'all':
         args.site = []
-        for k,v in status.items():
-            for group in v.groups.keys():
-                args.site += ['site={}; group={}'.format(k, group)]
+        for this in status:
+            params = 'site={}; group={}'.format(this.site_name, this.group)
+            if params not in args.site:
+                args.site += params
     for this in sorted(args.site):
         params = {}
         if '=' in this:
@@ -284,15 +253,25 @@ def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = _d
             params = {'site': this}
         logger.debug('Parsed params {}'.format(params))
         site = params['site']
-        group = 'default' if not 'group' in params else params['group']
-        if site not in status:
+        group = params.get('group', 'default')
+        match = [x for x in status if x.site_name == site and x.group == group]
+        if not match:
             logger.debug('Site {} not found in haproxy status'.format(site))
+            logger.debug('Status: {}'.format(status))
             continue
-        res = check_site(site, group, status, params)
+        if len(match) > 1:
+            logger.debug('More than one Site {} found in haproxy status'.format(site))
+            logger.debug('Matches: {}'.format(match))
+            continue
+        res = check_site(match[0], params)
         if res:
             output += res
 
     print('\n'.join(output))
+
+    if args.statsd_host:
+        send_to_statsd(args.statsd_prefix, status, args.statsd_host, logger)
+
     return output != []
 
 
