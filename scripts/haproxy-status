@@ -54,16 +54,16 @@ _defaults = {'stats_url': 'http://127.0.0.1:9000/haproxy_stats;csv',
 
 # Metrics to send along to statsd
 statsd_metrics = {
-    'bin': ('bytes_in', 'c'),
-    'bout': ('bytes_out', 'c'),
+    'bin': ('bytes_in', 'g'),
+    'bout': ('bytes_out', 'g'),
     # the average connect time in ms over the 1024 last requests
-    'ctime': ('avg_connect_time_1024req', 'g'),
+    'ctime': ('avg_connect_time_1024req', 'ms'),
     # number of requests that encountered an error trying to
     # connect to a backend server. The backend stat is the sum of the stat
     # for all servers of that backend: ('', 'c'), plus any connection errors not
     # associated with a particular server (such as the backend having no
     # active servers).
-    'econ': ('connect_errors', 'c'),
+    'econ': ('connect_errors', 'g'),
     # request errors. Some of the possible causes are:
     # - early termination from the client: ('', 'c'), before the request has been sent.
     # - read error from the client
@@ -71,23 +71,23 @@ statsd_metrics = {
     # - client closed connection
     # - various bad requests from the client.
     # - request was tarpitted.
-    'ereq': ('request_errors', 'c'),
-    'hrsp_1xx': ('http_response_1xx', 'c'),
-    'hrsp_2xx': ('http_response_2xx', 'c'),
-    'hrsp_3xx': ('http_response_3xx', 'c'),
-    'hrsp_4xx': ('http_response_4xx', 'c'),
-    'hrsp_5xx': ('http_response_5xx', 'c'),
+    'ereq': ('request_errors', 'g'),
+    'hrsp_1xx': ('http_response_1xx', 'g'),
+    'hrsp_2xx': ('http_response_2xx', 'g'),
+    'hrsp_3xx': ('http_response_3xx', 'g'),
+    'hrsp_4xx': ('http_response_4xx', 'g'),
+    'hrsp_5xx': ('http_response_5xx', 'g'),
     # the average queue time in ms over the 1024 last requests
-    'qtime': ('avg_queue_time_1024req', 'g'),
+    'qtime': ('avg_queue_time_1024req', 'ms'),
     # number of sessions per second over last elapsed second
     'rate': ('sessions_1s', 'g'),
     # the average response time in ms over the 1024 last requests (0 for TCP)
-    'rtime': ('response_time_1024req', 'g'),
+    'rtime': ('response_time_1024req', 'ms'),
     # current sessions
     'scur': ('num_sessions', 'g'),
     'smax': ('max_sessions', 'g'),
     # the average total session time in ms over the 1024 last requests
-    'ttime': ('total_time_last_1024req', 'g'),
+    'ttime': ('total_time_last_1024req', 'ms'),
 }
 
 
