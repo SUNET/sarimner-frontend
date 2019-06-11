@@ -64,6 +64,11 @@ initalisation before releasing the lock again.
                                          release lock
                                                |
                                              exit
+
+Ideas for further improvement:
+
+  - Start the network initialisation when the haproxy container is present
+  - Hang around watching the containers. If they malfunction, kill the service.
 """
 import fcntl
 import logging
@@ -202,7 +207,7 @@ def manager_process(script, args, q, logger):
         t1 = datetime.datetime.now()
         res = subprocess.run([script, args.name])
         t2 = datetime.datetime.now()
-        logger.info('Frontend instance {!r} network configured in {:2f} seconds'.format(
+        logger.info('Frontend instance {!r} network configured in {:.2f} seconds'.format(
             args.name, (t2 - t1).total_seconds()))
         logger.debug('Network configuration script result: {}'.format(res))
         q.put('exit')
