@@ -168,22 +168,30 @@ def send_to_statsd(prefix: str, status: Iterable[Site], host: str, logger: loggi
         data = b''
         count = 0
         for server in site.servers:
-            # Replace dots in server names with underscores, since dots are separators in statsd
-            this_prefix = prefix + '.{}.{}'.format(server.pxname.replace('.', '_'),
-                                                   server.svname.replace('.', '_'))
-
-            for name, spec in statsd_metrics.items():
+            for csv_name, spec in statsd_metrics.items():
                 stat_name, stat_type, = spec
-                value = getattr(server, name, 0)
+                value = getattr(server, csv_name, 0)
                 if not value:
-                    logger.debug('No value for stat {}/{}'.format(name, stat_name))
+                    logger.debug('No value for stat {}/{}'.format(csv_name, stat_name))
                     continue
                 value = int(value)
-                encoded = '{prefix}.{name}:{value}|{typ}\n'.format(
-                    prefix=this_prefix, name=stat_name, value=value, typ=stat_type
+                tags = []
+                if '__' in server.pxname:
+                    site_name, backend_name, = server.pxname.split('__')
+                    tags += ['site=' + site_name,
+                             'backend=' + backend_name]
+                else:
+                    tags += ['site=' + server.pxname]
+                tags += ['backend_server=' + server.svname]
+                encoded = '{prefix}.{metric_name};{tags}:{value}|{typ}\n'.format(
+                    prefix=prefix,
+                    metric_name=stat_name,
+                    tags=';'.join(tags),
+                    value=value,
+                    typ=stat_type
                 ).encode()
                 data += encoded
-                logger.debug('STAT {} {}'.format(name, encoded))
+                logger.debug('STAT {} {}'.format(csv_name, encoded))
                 count += 1
             logger.debug('Sending {} bytes ({} stats) to {} port {}'.format(len(data), count, host, port))
             sock.sendto(data, (host, port))
