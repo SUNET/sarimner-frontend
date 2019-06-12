@@ -183,7 +183,7 @@ def send_to_statsd(prefix: str, status: Iterable[Site], host: str, logger: loggi
                 else:
                     tags += ['site=' + server.pxname]
                 tags += ['backend_server=' + server.svname]
-                encoded = '{prefix}.{metric_name};{tags}:{value}|{typ}\n'.format(
+                encoded = '{prefix}.{metric_name},{tags}:{value}|{typ}\n'.format(
                     prefix=prefix,
                     metric_name=stat_name,
                     tags=','.join(tags),
