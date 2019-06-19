@@ -193,8 +193,7 @@ def send_to_statsd(prefix: str, status: Iterable[Site], host: str, logger: loggi
                 data += encoded
                 logger.debug('STAT {} {}'.format(csv_name, encoded))
                 count += 1
-            # info log this for now to ensure we send stats once per telegraf flush interval
-            logger.info('Sending {} bytes ({} stats) to {} port {}'.format(len(data), count, host, port))
+            logger.debug('Sending {} bytes ({} stats) to {} port {}'.format(len(data), count, host, port))
             sock.sendto(data, (host, port))
 
 
@@ -278,7 +277,7 @@ def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = No
 
     print('\n'.join(output))
 
-    if args.statsd_host:
+    if args.statsd_host and status is not None:
         send_to_statsd(args.statsd_prefix, status, args.statsd_host, logger)
 
     return output != []
