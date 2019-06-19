@@ -82,9 +82,16 @@ while [ 1 ]; do
 	cat ${OUTFILE}
     fi
 
-    sleep ${INTERVAL} &
+    # Sleep at least one second per round
+    spin_control=1
+
+    # Sleep adaptively to wake up once per interval, even if the stuff above takes a little while
+    # (this is important since haproxy-status (optionally) forwards stats to a time series database).
+    sleep $(( ${INTERVAL} - ${spin_control} - `date +%s` % ${INTERVAL} )) &
+    # Store pid of sleep process in 'pid' before blocking, in case the SIGTERM handler
+    # wants to terminate it.
     pid=$!
     wait ${pid}
 
-    sleep 1  # spin control
+    sleep ${spin_control}
 done
