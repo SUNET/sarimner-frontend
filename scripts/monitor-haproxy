@@ -28,8 +28,7 @@ for retry in $(seq 20); do
     if [ -S ${STATSSOCKET} ]; then
 	/opt/frontend/scripts/haproxy-status $* > ${STATUSFN}
 	grep -qe ^UP -e ^DOWN ${STATUSFN} && break
-	echo "No UP or DOWN status in ${STATUSFN}:"
-	cat ${STATUSFN}
+	echo "No UP or DOWN status in ${STATUSFN}"
     else
 	echo "$0: haproxy status socket ${STATSSOCKET} not found (attempt ${retry}/20)"
     fi
