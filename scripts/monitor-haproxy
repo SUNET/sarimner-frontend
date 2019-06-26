@@ -28,8 +28,11 @@ for retry in $(seq 20); do
     if [ -S ${STATSSOCKET} ]; then
 	/opt/frontend/scripts/haproxy-status $* > ${STATUSFN}
 	grep -qe ^UP -e ^DOWN ${STATUSFN} && break
+	echo "No UP or DOWN status in ${STATUSFN}:"
+	cat ${STATUSFN}
+    else
+	echo "$0: haproxy status socket ${STATSSOCKET} not found (attempt ${retry}/20)"
     fi
-    echo "$0: haproxy status socket ${STATSSOCKET} not found (attempt ${retry}/20)"
     sleep 2
 done
 
@@ -46,7 +49,7 @@ fi
 echo "$0: Startup status is `head -1 ${STATUSFN}`"
 
 status=$(head -1 ${STATUSFN} | awk '{print $1}')
-/opt/frontend/scripts/frontend-config --debug --fqdn ${HOSTFQDN} --status ${status} --instance ${INSTANCE} print_exabgp_announce > ${OUTFILE}.new
+/opt/frontend/scripts/frontend-config --debug --fqdn "${HOSTFQDN}" --status "${status}" --instance "${INSTANCE}" print_exabgp_announce > ${OUTFILE}.new
 mv ${OUTFILE}.new ${OUTFILE}
 echo "$0: Initial announcements:"
 cat ${OUTFILE}

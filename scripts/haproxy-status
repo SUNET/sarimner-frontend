@@ -264,11 +264,11 @@ def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = No
         group = params.get('group', 'default')
         match = [x for x in status if x.site_name == site and x.group == group]
         if not match:
-            logger.debug('Site {} not found in haproxy status'.format(site))
+            logger.error('Site {} not found in haproxy status'.format(site))
             logger.debug('Status: {}'.format(status))
             continue
         if len(match) > 1:
-            logger.debug('More than one Site {} found in haproxy status'.format(site))
+            logger.error('More than one Site {} found in haproxy status'.format(site))
             logger.debug('Matches: {}'.format(match))
             continue
         res = check_site(match[0], params)
