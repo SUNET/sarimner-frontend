@@ -32,14 +32,14 @@
 """
 Check that haproxy backends are up (up as defined in the 'site' argument string format)
 """
-import socket
-
-import argparse
 import logging
 import os
 import sys
 from logging.handlers import SysLogHandler
-from typing import Mapping, Sequence, Iterable
+
+import argparse
+import socket
+from typing import Iterable, Mapping, Sequence
 
 from haproxy_status.status import HAProxyStatusError, Site, get_status
 
@@ -54,8 +54,8 @@ _defaults = {'stats_url': 'http://127.0.0.1:9000/haproxy_stats;csv',
 
 # Metrics to send along to statsd
 statsd_metrics = {
-    'bin': ('bytes_in', 'g'),
-    'bout': ('bytes_out', 'g'),
+    'bin': ('bytes_in', 'c'),
+    'bout': ('bytes_out', 'c'),
     # the average connect time in ms over the 1024 last requests
     'ctime': ('avg_connect_time_1024req', 'ms'),
     # number of requests that encountered an error trying to
@@ -63,7 +63,7 @@ statsd_metrics = {
     # for all servers of that backend: ('', 'c'), plus any connection errors not
     # associated with a particular server (such as the backend having no
     # active servers).
-    'econ': ('connect_errors', 'g'),
+    'econ': ('connect_errors', 'c'),
     # request errors. Some of the possible causes are:
     # - early termination from the client: ('', 'c'), before the request has been sent.
     # - read error from the client
@@ -71,12 +71,12 @@ statsd_metrics = {
     # - client closed connection
     # - various bad requests from the client.
     # - request was tarpitted.
-    'ereq': ('request_errors', 'g'),
-    'hrsp_1xx': ('http_response_1xx', 'g'),
-    'hrsp_2xx': ('http_response_2xx', 'g'),
-    'hrsp_3xx': ('http_response_3xx', 'g'),
-    'hrsp_4xx': ('http_response_4xx', 'g'),
-    'hrsp_5xx': ('http_response_5xx', 'g'),
+    'ereq': ('request_errors', 'c'),
+    'hrsp_1xx': ('http_response_1xx', 'c'),
+    'hrsp_2xx': ('http_response_2xx', 'c'),
+    'hrsp_3xx': ('http_response_3xx', 'c'),
+    'hrsp_4xx': ('http_response_4xx', 'c'),
+    'hrsp_5xx': ('http_response_5xx', 'c'),
     # the average queue time in ms over the 1024 last requests
     'qtime': ('avg_queue_time_1024req', 'ms'),
     # number of sessions per second over last elapsed second
