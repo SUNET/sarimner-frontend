@@ -92,9 +92,9 @@ statsd_metrics = {
 
 
 def parse_args(defaults):
-    parser = argparse.ArgumentParser(description = 'haproxy status checker',
-                                     add_help = True,
-                                     formatter_class = argparse.ArgumentDefaultsHelpFormatter,
+    parser = argparse.ArgumentParser(description='haproxy status checker',
+                                     add_help=True,
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     parser.add_argument('site',
@@ -103,9 +103,9 @@ def parse_args(defaults):
                         help='Site to check, in key-value format (e.g. "site=www.dev.eduid.se; min_up=2")',
     )
     parser.add_argument('--debug',
-                        dest = 'debug',
-                        action = 'store_true', default = defaults['debug'],
-                        help = 'Enable debug operation',
+                        dest='debug',
+                        action='store_true', default=defaults['debug'],
+                        help='Enable debug operation',
     )
     parser.add_argument('--syslog',
                         dest = 'syslog',
