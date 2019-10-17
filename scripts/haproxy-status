@@ -43,11 +43,10 @@ from typing import Iterable, Mapping, Sequence
 
 from haproxy_status.status import HAProxyStatusError, Site, get_status
 
-logger = None
-
 _defaults = {'stats_url': 'http://127.0.0.1:9000/haproxy_stats;csv',
              'syslog': False,
              'debug': False,
+             'quiet': False,
              'interface': 'lo',
              'statsd_prefix': 'haproxy',
              }
@@ -95,58 +94,64 @@ def parse_args(defaults):
     parser = argparse.ArgumentParser(description='haproxy status checker',
                                      add_help=True,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+                                     )
 
     parser.add_argument('site',
                         nargs='+',
                         metavar='STR',
                         help='Site to check, in key-value format (e.g. "site=www.dev.eduid.se; min_up=2")',
-    )
+                        )
     parser.add_argument('--debug',
                         dest='debug',
                         action='store_true', default=defaults['debug'],
                         help='Enable debug operation',
-    )
+                        )
+    parser.add_argument('--quiet',
+                        dest='quiet',
+                        action='store_true', default=defaults['quiet'],
+                        help='Be less verbose',
+                        )
     parser.add_argument('--syslog',
-                        dest = 'syslog',
-                        action = 'store_true', default = defaults['syslog'],
-                        help = 'Enable syslog output',
-    )
+                        dest='syslog',
+                        action='store_true', default=defaults['syslog'],
+                        help='Enable syslog output',
+                        )
     parser.add_argument('--stats_url',
-                        dest = 'stats_url',
-                        default = defaults['stats_url'],
-                        help = 'haproxy stats URL (CSV format)',
-                        metavar = 'URL',
-    )
+                        dest='stats_url',
+                        default=defaults['stats_url'],
+                        help='haproxy stats URL (CSV format)',
+                        metavar='URL',
+                        )
     parser.add_argument('--statsd_host',
-                        dest = 'statsd_host',
-                        default = None,
-                        help = 'Send statistics to statsd host',
-                        metavar = 'HOST',
-    )
+                        dest='statsd_host',
+                        default=None,
+                        help='Send statistics to statsd host',
+                        metavar='HOST',
+                        )
     parser.add_argument('--statsd_prefix',
-                        dest = 'statsd_prefix',
-                        default = defaults['statsd_prefix'],
-                        help = 'Statsd name prefix to use',
-                        metavar = 'STR',
-    )
+                        dest='statsd_prefix',
+                        default=defaults['statsd_prefix'],
+                        help='Statsd name prefix to use',
+                        metavar='STR',
+                        )
     args = parser.parse_args()
     return args
 
 
-def check_site(site: Site, params: Mapping[str, str]) -> Sequence[str]:
+def check_site(site: Site, params: Mapping[str, str], logger: logging.Logger) -> Sequence[str]:
     logger.debug('Processing site {}, params {}'.format(
         site, params))
-    #logger.debug('RAW UP:')
-    #for this in site.backends_up:
-    #    logger.debug('  {}'.format(this))
-    #logger.debug('RAW SERVERS:')
-    #for this in site.servers:
-    #    logger.debug('  {}'.format(this))
+    logger.debug('Site servers:')
+    for this in site.servers:
+        logger.debug(f'  {this}')
+    logger.info(f'Site {site.site_name}/{site.group} backends:')
+    for this in site.servers:
+        logger.info(f'  {this.svname}/{this.addr} is {this.status} ({this.check_desc}, {this.last_chk})')
 
     # 'act' in haproxy CSV format is
     #   act [..BS]: number of active servers (backend), server is active (server)
-    logger.debug('Backends UP: {}'.format([x.act for x in site.backends_up]))
+    logger.debug('Backends UP: {}'.format(sum([int(x.act) for x in site.backends_up])))
+    logger.debug('Backends DOWN: {}'.format(sum([int(x.act) for x in site.backends_down])))
     up = sum([int(x.act) for x in site.backends_up])
     min_up = params.get('min_up', 1)
     if up < int(min_up):
@@ -158,9 +163,9 @@ def check_site(site: Site, params: Mapping[str, str]) -> Sequence[str]:
     return ['UP      site={}, group={}, backends_up={}'.format(site.site_name, site.group, up)]
 
 
-def send_to_statsd(prefix: str, status: Iterable[Site], host: str, logger: logging.Logger, port: int=8125) -> None:
+def send_to_statsd(prefix: str, status: Iterable[Site], host: str, logger: logging.Logger, port: int = 8125) -> None:
     while prefix and prefix.endswith('.'):
-        prefix=prefix[:1]
+        prefix = prefix[:1]
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -197,36 +202,34 @@ def send_to_statsd(prefix: str, status: Iterable[Site], host: str, logger: loggi
             sock.sendto(data, (host, port))
 
 
-def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = None):
+def main(myname='haproxy-status', args=None, logger_in=None, defaults=None):
     if not args:
         if defaults is None:
             defaults = _defaults
         args = parse_args(defaults)
 
-    global logger
     # initialize various components
     if logger_in:
         logger = logger_in
     else:
         logger = logging.getLogger(myname)
+        if not args.quiet:
+            logger.setLevel(logging.INFO)
         if args.debug:
             logger.setLevel(logging.DEBUG)
-            # log to stderr when debugging
-            formatter = logging.Formatter('%(asctime)s %(name)s %(threadName)s: %(levelname)s %(message)s')
-            stream_h = logging.StreamHandler(sys.stderr)
-            stream_h.setFormatter(formatter)
-            logger.addHandler(stream_h)
+            # formatter with asctime when debugging (because it is likely to a terminal)
+            stderr_formatter = logging.Formatter('%(asctime)s %(name)s: %(levelname)s %(message)s')
+        else:
+            # no asctime when not debugging (because output is likely sent to a log with timestamps already)
+            stderr_formatter = logging.Formatter('%(name)s: %(levelname)s: %(message)s')
+        stream_h = logging.StreamHandler(sys.stderr)
+        stream_h.setFormatter(stderr_formatter)
+        logger.addHandler(stream_h)
         if args.syslog:
             syslog_h = SysLogHandler(address='/dev/log')
             formatter = logging.Formatter('%(name)s: %(levelname)s %(message)s')
             syslog_h.setFormatter(formatter)
             logger.addHandler(syslog_h)
-        elif not args.debug:
-            # log to stdout when not using syslog
-            formatter = logging.Formatter('%(levelname)s: %(message)s')
-            stream_h = logging.StreamHandler(sys.stdout)
-            stream_h.setFormatter(formatter)
-            logger.addHandler(stream_h)
 
     try:
         status = get_status(args.stats_url, logger)
@@ -271,7 +274,7 @@ def main(myname = 'haproxy-status', args = None, logger_in = None, defaults = No
             logger.error('More than one Site {} and group {} found in haproxy status'.format(site, group))
             logger.debug('Matches: {}'.format(match))
             continue
-        res = check_site(match[0], params)
+        res = check_site(match[0], params, logger)
         if res:
             output += res
 
