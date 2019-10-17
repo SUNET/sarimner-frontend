@@ -25,9 +25,9 @@ OUTFILE=${OUTFILE-"/opt/frontend/monitor/${INSTANCE}/announce"}
 STATSSOCKET=${STATSSOCKET-'/var/run/haproxy-control/stats'}
 
 for retry in $(seq 20); do
-    if [ -S ${STATSSOCKET} ]; then
-	/opt/frontend/scripts/haproxy-status $* > ${STATUSFN}
-	grep -qe ^UP -e ^DOWN ${STATUSFN} && break
+    if [ -S "${STATSSOCKET}" ]; then
+	/opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}"
+	head -1 "${STATUSFN}" | grep -qe ^UP -e ^DOWN "${STATUSFN}" && break
 	echo "No UP or DOWN status in ${STATUSFN}"
     else
 	echo "$0: haproxy status socket ${STATSSOCKET} not found (attempt ${retry}/20)"
@@ -35,23 +35,24 @@ for retry in $(seq 20); do
     sleep 2
 done
 
-test -S ${STATSSOCKET} || {
+test -S "${STATSSOCKET}" || {
     echo "$0: Could not find haproxy status socket ${STATSSOCKET} - is the haproxy container not running?"
     exit 1
 }
 
-if [[ ! -s ${STATUSFN} ]]; then
+if [[ ! -s "${STATUSFN}" ]]; then
     echo "$0: Could not get status from ${STATSSOCKET} - exiting"
     exit 1
 fi
 
-echo "$0: Startup status is `head -1 ${STATUSFN}`"
+echo "$0: Startup status is $(head -1 "${STATUSFN}")"
 
-status=$(head -1 ${STATUSFN} | awk '{print $1}')
-/opt/frontend/scripts/frontend-config --debug --fqdn "${HOSTFQDN}" --status "${status}" --instance "${INSTANCE}" print_exabgp_announce > ${OUTFILE}.new
-mv ${OUTFILE}.new ${OUTFILE}
+status=$(head -1 "${STATUSFN}" | awk '{print $1}')
+/opt/frontend/scripts/frontend-config --fqdn "${HOSTFQDN}" --status "${status}" \
+					      --instance "${INSTANCE}" print_exabgp_announce > "${OUTFILE}.new"
+mv "${OUTFILE}.new" "${OUTFILE}"
 echo "$0: Initial announcements:"
-cat ${OUTFILE}
+cat "${OUTFILE}"
 
 pid=0
 
@@ -63,25 +64,34 @@ term_handler() {
     fi
     echo "$0: Changing any 'announce' in ${OUTFILE} to 'withdraw'"
     # Don't do in-place edit since exabgp will pick the change up using inotify move-to event
-    sed -e 's/^announce /withdraw /' < ${OUTFILE} > ${OUTFILE}.new
-    mv ${OUTFILE}.new ${OUTFILE}
+    sed -e 's/^announce /withdraw /' < "${OUTFILE}" > "${OUTFILE}.new"
+    mv "${OUTFILE}.new" "${OUTFILE}"
     exit 143; # 128 + 15 -- SIGTERM
 }
 
 trap 'kill ${!}; term_handler' SIGTERM
 
-while [ 1 ]; do
-    /opt/frontend/scripts/haproxy-status $* > ${STATUSFN}.new
+while true; do
+    if [ -S "${STATSSOCKET}" ]; then
+	/opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}.new" 2>"${STATUSFN}.stderr"
+    else
+	echo "$0: haproxy stats socket ${STATSSOCKET} disappeared"
+	echo 'UNKNOWN' > "${STATUSFN}.new"
+    fi
     changed=0
     cmp --quiet "${STATUSFN}.new" "${STATUSFN}" || changed=1
-    if [[ $changed == 1 || ! -f ${OUTFILE} ]]; then
-	mv ${STATUSFN}.new ${STATUSFN}
-	echo "$0: Status changed to `cat ${STATUSFN}`"
+    if [[ $changed == 1 || ! -f "${OUTFILE}" ]]; then
+	mv "${STATUSFN}.new" "${STATUSFN}"
+	cat "${STATUSFN}.stderr"
+	echo "$0: Status changed to $(cat "${STATUSFN}")"
 
-	status=$(head -1 ${STATUSFN} | awk '{print $1}')
-	/opt/frontend/scripts/frontend-config --debug --fqdn ${HOSTFQDN} --status ${status} --instance ${INSTANCE} print_exabgp_announce > ${OUTFILE}.new
-	mv ${OUTFILE}.new ${OUTFILE}
-	cat ${OUTFILE}
+	status=$(head -1 "${STATUSFN}" | awk '{print $1}')
+	/opt/frontend/scripts/frontend-config --debug --fqdn "${HOSTFQDN}" \
+					      --status "${status}" \
+					      --instance "${INSTANCE}" \
+					      print_exabgp_announce > "${OUTFILE}.new"
+	mv "${OUTFILE}.new" "${OUTFILE}"
+	cat "${OUTFILE}"
     fi
 
     # Sleep at least one second per round
@@ -89,7 +99,7 @@ while [ 1 ]; do
 
     # Sleep adaptively to wake up once per interval, even if the stuff above takes a little while
     # (this is important since haproxy-status (optionally) forwards stats to a time series database).
-    sleep $(( ${INTERVAL} - ${spin_control} - `date +%s` % ${INTERVAL} )) &
+    sleep $(( "${INTERVAL}" - "${spin_control}" - $(date +%s) % "${INTERVAL}" )) &
     # Store pid of sleep process in 'pid' before blocking, in case the SIGTERM handler
     # wants to terminate it.
     pid=$!
