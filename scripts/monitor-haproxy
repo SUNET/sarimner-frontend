@@ -26,7 +26,7 @@ STATSSOCKET=${STATSSOCKET-'/var/run/haproxy-control/stats'}
 
 for retry in $(seq 20); do
     if [ -S "${STATSSOCKET}" ]; then
-	/opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}"
+	/opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}" 2>"${STATUSFN}.stderr"
 	head -1 "${STATUSFN}" | grep -qe ^UP -e ^DOWN "${STATUSFN}" && break
 	echo "No UP or DOWN status in ${STATUSFN}"
     else
@@ -45,6 +45,7 @@ if [[ ! -s "${STATUSFN}" ]]; then
     exit 1
 fi
 
+cat "${STATUSFN}.stderr"
 echo "$0: Startup status is $(head -1 "${STATUSFN}")"
 
 status=$(head -1 "${STATUSFN}" | awk '{print $1}')
