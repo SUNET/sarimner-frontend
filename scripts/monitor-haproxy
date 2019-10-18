@@ -73,20 +73,27 @@ trap 'kill ${!}; term_handler' SIGTERM
 
 while true; do
     if [ -S "${STATSSOCKET}" ]; then
-	/opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}.new" 2>"${STATUSFN}.stderr"
+	/opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}.new" 2>"${STATUSFN}.stderr.new"
     else
 	echo "$0: haproxy stats socket ${STATSSOCKET} disappeared"
 	echo 'UNKNOWN' > "${STATUSFN}.new"
     fi
     changed=0
+    cmp --quiet "${STATUSFN}.stderr.new" "${STATUSFN}.stderr" || changed=1
+    if [[ $changed == 1 ]]; then
+	# Show any changes in backend status
+	mv "${STATUSFN}.stderr.new" "${STATUSFN}.stderr"
+	cat "${STATUSFN}.stderr"
+    fi
+    changed=0
     cmp --quiet "${STATUSFN}.new" "${STATUSFN}" || changed=1
     if [[ $changed == 1 || ! -f "${OUTFILE}" ]]; then
+	echo "$0: Backend status changed, old: $(cat "${STATUSFN}")"
+	echo "$0: Backend status changed, new: $(cat "${STATUSFN}.new")"
 	mv "${STATUSFN}.new" "${STATUSFN}"
-	cat "${STATUSFN}.stderr"
-	echo "$0: Status changed to $(cat "${STATUSFN}")"
 
 	status=$(head -1 "${STATUSFN}" | awk '{print $1}')
-	/opt/frontend/scripts/frontend-config --debug --fqdn "${HOSTFQDN}" \
+	/opt/frontend/scripts/frontend-config --fqdn "${HOSTFQDN}" \
 					      --status "${status}" \
 					      --instance "${INSTANCE}" \
 					      print_exabgp_announce > "${OUTFILE}.new"
