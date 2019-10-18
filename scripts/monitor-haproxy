@@ -82,8 +82,9 @@ while true; do
     cmp --quiet "${STATUSFN}.stderr.new" "${STATUSFN}.stderr" || changed=1
     if [[ $changed == 1 ]]; then
 	# Show any changes in backend status
+	cat "${STATUSFN}.stderr.new"
+	cat "${STATUSFN}.new"
 	mv "${STATUSFN}.stderr.new" "${STATUSFN}.stderr"
-	cat "${STATUSFN}.stderr"
     fi
     changed=0
     cmp --quiet "${STATUSFN}.new" "${STATUSFN}" || changed=1
