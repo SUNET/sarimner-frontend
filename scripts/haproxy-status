@@ -242,6 +242,7 @@ def main(myname='haproxy-status', args=None, logger_in=None, defaults=None):
         return False
 
     if not status:
+        print('UNKNOWN')
         return False
 
     output = []
