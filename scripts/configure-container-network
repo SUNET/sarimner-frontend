@@ -63,15 +63,22 @@ echo "Container ${CONTAINER}/${DOCKERID} has pid ${DOCKERPID} - symlinking /var/
 VETHHOST="${INSTANCE}"
 VETHCONTAINER="ve1${INSTANCE}"
 
-set -x
-
 # Enable IPv6 forwarding. Should ideally be done more selectively, but...
 sysctl net.ipv6.conf.all.forwarding=1
 
+set -x
+
 # Add a pair of virtual ethernet interfaces (think of them as a virtual cross-over ethernet cable)
+ip link del ${VETHHOST}
 ip link add name ${VETHHOST} mtu 1500 type veth peer name ${VETHCONTAINER} mtu 1500
 ip link set ${VETHHOST} master br-${INSTANCE}
 ip link set ${VETHHOST} up
+
+echo "$0: Network namespace and process diagnostics:"
+pgrep -a --ns "${DOCKERPID}"
+ip link show "${VETHHOST}"
+ip link show "${VETHCONTAINER}"
+ip link show "br-${INSTANCE}"
 
 # Move one end of the virtual ethernet cable inside the network namespace of the docker container
 ip link set ${VETHCONTAINER} netns ${INSTANCE} || {
