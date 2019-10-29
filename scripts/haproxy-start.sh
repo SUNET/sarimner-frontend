@@ -5,6 +5,7 @@
 #
 
 HAPROXYCFG=${HAPROXYCFG-'/etc/haproxy/haproxy.cfg'}
+HAPROXYMASTERSOCK=${HAPROXYMASTERSOCK-'/run/haproxy-master.sock'}
 HAPROXYWAITIF=${HAPROXYWAITIF-'20'}
 HAPROXYWAITCFG=${HAPROXYWAITCFG-'10'}
 HAPROXYWAITCONTAINER=${HAPROXYWAITCONTAINER-'10'}
@@ -54,6 +55,8 @@ if [[ $WAIT_FOR_CONTAINER ]]; then
     fi
 fi
 
+# Show haproxy version
+/usr/sbin/haproxy -v
 
 echo "$0: Checking config: ${HAPROXYCFG}"
 
@@ -68,23 +71,34 @@ echo "$0: Config ${HAPROXYCFG} checked OK, starting haproxy"
 if [ -x /usr/sbin/haproxy-systemd-wrapper ]; then
     # haproxy 1.7
     /usr/sbin/haproxy-systemd-wrapper -p /run/haproxy.pid -f "${HAPROXYCFG}" &
-    pid=$!
+    main_pid=$!
 else
-    # haproxy 1.8+
-    /usr/sbin/haproxy "$@" -p /run/haproxy.pid -f "${HAPROXYCFG}" &
-    pid=$!
+    if /usr/sbin/haproxy -v | grep -q 'HA-Proxy version 2'; then
+	# haproxy 2.0+
+	sock_args=''
+	if [[ $HAPROXYMASTERSOCK ]]; then
+	    sock_args=(-S "${HAPROXYMASTERSOCK}")
+	fi
+	# -db is essential for haproxy to not pipe stdout,stderr to /dev/null
+	/usr/sbin/haproxy "$@" -p /run/haproxy.pid -f "${HAPROXYCFG}" -W "${sock_args[@]}" -db &
+	main_pid=$!
+    else
+	# haproxy 1.8 or 1.9
+	/usr/sbin/haproxy "$@" -p /run/haproxy.pid -f "${HAPROXYCFG}" &
+	main_pid=$!
+    fi
 fi
-pid2=0
+wait_pid=0
 
 term_handler() {
-    echo "$0: Received SIGTERM, shutting down ${pid}, ${pid2}"
-    if [ $pid -ne 0 ]; then
-	kill -SIGTERM "$pid"
-	wait "$pid"
+    echo "$0: Received SIGTERM, shutting down PIDs $(xargs echo < /run/haproxy.pid) (main: ${main_pid}) (haproxy) + ${wait_pid} (wait)"
+    if [ $main_pid -ne 0 ]; then
+	kill -SIGTERM "$main_pid"
+	wait "$main_pid"
     fi
-    if [ $pid2 -ne 0 ]; then
-	kill -SIGTERM "$pid2"
-	wait "$pid2"
+    if [ $wait_pid -ne 0 ]; then
+	kill -SIGTERM "$wait_pid"
+	wait "$wait_pid"
     fi
     exit 143; # 128 + 15 -- SIGTERM
 }
@@ -97,12 +111,12 @@ while true; do
 
     # Block until an inotify event says that the config file was replaced
     inotifywait -q -e moved_to "${HAPROXYCFG}" &
-    pid2=$!
-    wait $pid2
+    wait_pid=$!
+    wait $wait_pid
 
     echo "$0: Move-to event triggered, checking config: ${HAPROXYCFG}"
-    config_ok=1
-    /usr/sbin/haproxy -c -f "${HAPROXYCFG}" || config_ok=0
+    config_ok=0
+    /usr/sbin/haproxy -c -f "${HAPROXYCFG}" && config_ok=1
     if [ $config_ok = 1 ]; then
 	echo "$0: Config ${HAPROXYCFG} checked OK, gracefully restarting haproxy"
 	/usr/sbin/haproxy "$@" -p /run/haproxy.pid -f "${HAPROXYCFG}" -sf "$(cat /run/haproxy.pid)"
