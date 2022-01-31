@@ -6,7 +6,7 @@
 # specified as the only argument.
 #
 # This script sets up a virtual ethernet 'cable' into the container namespace.
-# The outside end is called e.g. www0 for instance www, and the inside end is
+# The outside end is called e.g. br-www for instance www, and the inside end is
 # always called sarimner0.
 #
 # The haproxy-start.sh script waits for sarimner0 to come up before actually
@@ -34,7 +34,7 @@ num_tries=60
 for retry in $(seq ${num_tries}); do
     # Check for two names to handle more eventualities of how the instances are launced with docker-compose
     # (docker-compose up results in instance_haproxy_1, docker-compose run haproxy results in instance_haproxy_run_1)
-    DOCKEROUT=$(docker ps --filter name="${MATCHNAME}" --filter name="${MATCHNAME2}" --format='{{ .ID }}:{{ .Names }}')
+    DOCKEROUT=$(docker ps --format='{{ .ID }}:{{ .Names }}' | grep -e ":${MATCHNAME}$" -e ":${MATCHNAME2}$" )
     if [[ $DOCKEROUT ]]; then
 	DOCKERID=$(echo $DOCKEROUT | cut -d : -f 1)
 	CONTAINER=$(echo $DOCKEROUT | cut -d : -f 2)
@@ -116,4 +116,3 @@ if [[ $v6gw ]]; then
 else
     echo "$0: Can't set up IPv6 routing from container, device ${VETHHOST} has no IPv6 address"
 fi
-
