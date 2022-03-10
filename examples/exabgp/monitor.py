@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 #
 # Copyright 2018 SUNET. All rights reserved.
 #
@@ -41,24 +41,23 @@ Install this script as /etc/bgp/monitor and configure exabgp with this:
 If exabgp runs in a docker container, make sure to volume mount the monitor_dir
 (default /opt/frontend/monitor) into that container.
 """
-
-
+import argparse
+import asyncio
+import logging
+import logging.handlers
 import os
+import random
+from dataclasses import dataclass, field
+from typing import Dict
+
 import sys
 import time
-import random
-import logging
-import argparse
-
-import logging.handlers
-import inotify.adapters
-from inotify.constants import IN_MOVED_TO, IN_CREATE, IN_DELETE
-
+from pyinotify import AsyncioNotifier, Event, EventsCodes, ProcessEvent, WatchManager
 
 _defaults = {'syslog': True,
              'debug': False,
              'monitor_dir': '/opt/frontend/monitor',
-             'timeout': 60,
+             'timeout': 60,  # TODO: Re-implement the timeout functionality after moving to asyncio!
              }
 
 
@@ -210,65 +209,65 @@ class InstanceDir(object):
             if self.reload():
                 self._logger.warning('{}: Scheduled poll detected unexpected changes'.format(self))
 
+@dataclass
+class State:
+    dirs: Dict[str, InstanceDir] = field(default_factory=dict)
+
+
+class AnnounceEvent(ProcessEvent):
+
+    def __init__(self, args, logger, state: State):
+        super().__init__()
+        self._args = args
+        self._logger = logger
+        self._state = state
+
+    def process_default(self, event: Event):
+        if not event.pathname.endswith('/announce'):
+            self._logger.debug(f'Not an announce file: {event.pathname}')
+            return
+        if event.maskname == 'IN_MOVED_TO':
+            _dir = os.path.dirname(event.pathname)
+            if _dir in self._state.dirs:
+                self._state.dirs[_dir].reload()
+            else:
+                _timeout = self._args.timeout + (random.random() * 5) - 2.5  # spread polling intervals
+                this = InstanceDir(_dir, _timeout, self._logger)
+                self._state.dirs[_dir] = this
+                logger.info(f'Added instance {this}')
+        elif event.maskname == 'DELETE':
+            _dir = os.path.dirname(event.pathname)
+            if _dir in self._state.dirs:
+                self._state.dirs[_dir].withdraw()
+                this = self._state.dirs.pop(_dir)
+                logger.info(f'Removed instance {this}')
+        else:
+            self._logger.warning(f'Unhandled announce event: {event}')
+
 
 def main(args, logger):
-    i = inotify.adapters.Inotify()
-    dirs = {}
+    wm = WatchManager()
+    loop = asyncio.get_event_loop()
+    mask = (EventsCodes.ALL_FLAGS['IN_MOVED_TO'] |
+            EventsCodes.ALL_FLAGS['IN_CREATE'] |
+            EventsCodes.ALL_FLAGS['IN_DELETE']
+            )
 
-    mask = (IN_MOVED_TO | IN_CREATE | IN_DELETE)
-
-    # Monitor the top level directory to detect added/removed instances
-    i.add_watch(args.monitor_dir, mask=mask)
-
+    state = State()
     # Add a monitor for each instance in the top level directory
     for this in os.listdir(args.monitor_dir):
         dir = os.path.join(args.monitor_dir, this)
         if os.path.isdir(dir):
-            i.add_watch(dir, mask=mask)
             _timeout = args.timeout + (random.random() * 5) - 2.5  # spread polling intervals
-            dirs[dir] = InstanceDir(dir,  _timeout, logger)
-            logger.debug('Startup added instance {!s}'.format(dirs[dir]))
+            this = InstanceDir(dir, _timeout, logger)
+            state.dirs[dir] = this
+            logger.debug(f'Startup added directory {this}')
 
-    logger.info('Waiting for file system events under {}'.format(args.monitor_dir))
-
-    for event in i.event_gen(yield_nones = True):
-        if event is None:
-            # Whenever there are no events for args.timeout seconds, we poll
-            # the files to make sure we didn't miss anything
-            now = time.time()
-            for dir in dirs.values():
-                dir.poll(now)
-            continue
-
-        (_header, type_names, path, filename) = event
-
-        logger.debug("Received file system event: path={!r} fn={!r}, types={!r}".format(
-            path, filename, type_names))
-
-        if path == args.monitor_dir:
-            # If the path is the top level directory, check if an instance was created or removed
-            instance_dir = os.path.join(path, filename)
-            if os.path.isdir(instance_dir):
-                # Instance added
-                i.add_watch(instance_dir, mask=mask)
-                _timeout = args.timeout + (random.random() * 5) - 2.5  # spread polling intervals
-                dirs[instance_dir] = InstanceDir(instance_dir, _timeout, logger)
-            elif instance_dir in dirs:
-                # Instance removed
-                this = dirs.pop(instance_dir)
-                logger.info('Instance {} removed'.format(this))
-                this.withdraw()
-                i.remove_watch(this.dir)
-        elif filename == 'announce':
-            # Withdraw routes if an announce file is removed, and reload it if it might have been updated
-            if path not in dirs:
-                logger.info('Spotted update to {} that was not monitored?'.format(path))
-                return False
-            if os.path.isfile(dirs[path].announce_fn):
-                dirs[path].reload()
-            else:
-                # Announce file removed, withdraw announcement
-                dirs[path].withdraw()
+    notifier = AsyncioNotifier(wm, loop, default_proc_fun=AnnounceEvent(args, logger, state))
+    wm.add_watch(args.monitor_dir, mask, rec=True, auto_add=True)
+    loop.run_forever()
+    notifier.stop()
+    return False
 
 
 if __name__ == '__main__':
