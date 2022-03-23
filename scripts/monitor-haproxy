@@ -26,11 +26,26 @@ STATSSOCKET=${STATSSOCKET-'/var/run/haproxy-control/stats'}
 
 for retry in $(seq 20); do
     if [ -S "${STATSSOCKET}" ]; then
-	/opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}" 2>"${STATUSFN}.stderr"
-	head -1 "${STATUSFN}" | grep -qe ^UP -e ^DOWN "${STATUSFN}" && break
-	echo "No UP or DOWN status in ${STATUSFN}"
+        /opt/frontend/scripts/haproxy-status "$@" > "${STATUSFN}" 2>"${STATUSFN}.stderr"
+        head -1 "${STATUSFN}" | grep -qe ^UP -e ^DOWN "${STATUSFN}" && break
+        echo "No UP or DOWN status in ${STATUSFN} (attempt ${retry}/20)"
+        if [[ $((retry % 9)) == 1 ]]; then
+            # help diagnose e.g. permission problems
+            echo "haproxy stats-socket and haproxy-status generated output file(s):"
+            ls -l "${STATSSOCKET}" "${STATUSFN}" "${STATUSFN}.stderr"
+            echo "Current user:"
+            id
+            test -s "${STATUSFN}" && {
+                echo "haproxy-status stdout:"
+                cat "${STATUSFN}"
+            }
+            test -s "${STATUSFN}.stderr" && {
+                echo "haproxy-status stderr:"
+                cat "${STATUSFN}.stderr"
+            }
+        fi
     else
-	echo "$0: haproxy status socket ${STATSSOCKET} not found (attempt ${retry}/20)"
+        echo "$0: haproxy status socket ${STATSSOCKET} not found (attempt ${retry}/20)"
     fi
     sleep 2
 done
@@ -45,7 +60,6 @@ if [[ ! -s "${STATUSFN}" ]]; then
     exit 1
 fi
 
-cat "${STATUSFN}.stderr"
 echo "$0: Startup status is $(head -1 "${STATUSFN}")"
 
 status=$(head -1 "${STATUSFN}" | awk '{print $1}')
