@@ -5,6 +5,7 @@
 #
 
 cfgfile='/etc/haproxy/haproxy.cfg'
+OUTFILE=${OUTFILE-'/dev/shm/generated.cfg'}
 
 rm -f "${cfgfile}.new"
 
@@ -22,19 +23,47 @@ term_handler() {
 trap 'kill ${!}; term_handler' SIGTERM
 
 while [ 1 ]; do
-    /opt/frontend/scripts/frontend-config $* print_haproxy_config > /etc/haproxy/haproxy.cfg.new
+    for retry in $(seq 20); do
+        /opt/frontend/scripts/frontend-config $* print_haproxy_config > "${OUTFILE}" 2> "${OUTFILE}.stderr" && break
+        echo "Failed generating haproxy configuration from templates and backend info (attempt ${retry}/20)"
+        if [[ $((retry % 9)) == 1 ]]; then
+            # help diagnose e.g. permission problems
+            echo "haproxy config and generated output file(s):"
+            ls -l "${cfgfile}" "${OUTFILE}" "${OUTFILE}.stderr"
+            echo "Current user:"
+            id
+            test -s "${OUTFILE}" && {
+                echo "Top 10 lines of print_haproxy_config stdout:"  # could be whole haproxt config
+                head -10 "${OUTFILE}"
+            }
+            test -s "${OUTFILE}.stderr" && {
+                echo "print_haproxy_config stderr:"
+                cat "${OUTFILE}.stderr"
+            }
+        fi
+        rm -f "${OUTFILE}" "${OUTFILE}.stderr"
+        # spin control
+        sleep 1
+    done
+
+    if [ ! -s /etc/haproxy/haproxy.cfg.new ]; then
+        echo "haproxy config generation failed, giving up"
+        exit 1
+    fi
 
     changed=0
-    if [ -s /etc/haproxy/haproxy.cfg.new ]; then
-	cmp --quiet "${cfgfile}.new" "${cfgfile}" || changed=1
-	if [ $changed -ne 0 ]; then
+    cmp --quiet "${OUTFILE}" "${cfgfile}" || changed=1
+    if [ $changed -ne 0 ]; then
+        # As a first step, "move" (really "copy and remove") the file to the same directory to ensure
+        # the next mv will be successful, and atomic.
+        mv "${OUTFILE}" "${cfgfile}.new" && {
 	    echo "haproxy config changed:";
 	    diff -u "${cfgfile}" "${cfgfile}.new"
 	    # this mv will inotify-trigger the autoreload.sh in the haproxy container to reload haproxy
 	    mv "${cfgfile}.new" "${cfgfile}"
-	else
-	    echo "haproxy config did not change"
-	fi
+        }
+    else
+	echo "haproxy config did not change"
     fi
 
     sleep 1  # spin control
