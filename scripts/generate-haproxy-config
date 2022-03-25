@@ -4,10 +4,10 @@
 # generation is detected.
 #
 
-cfgfile='/etc/haproxy/haproxy.cfg'
 OUTFILE=${OUTFILE-'/dev/shm/generated.cfg'}
+HAPROXY_NEW_CONFIG=${HAPROXY_NEW_CONFIG-'/etc/haproxy/haproxy.cfg'}
 
-rm -f "${cfgfile}.new"
+rm -f "${HAPROXY_NEW_CONFIG}.new"
 
 pid=0
 
@@ -23,13 +23,14 @@ term_handler() {
 trap 'kill ${!}; term_handler' SIGTERM
 
 while [ 1 ]; do
+    # Generate new haproxy config from templates and API registered backends information into a staging area
     for retry in $(seq 20); do
         /opt/frontend/scripts/frontend-config $* print_haproxy_config > "${OUTFILE}" 2> "${OUTFILE}.stderr" && break
         echo "Failed generating haproxy configuration from templates and backend info (attempt ${retry}/20)"
         if [[ $((retry % 9)) == 1 ]]; then
             # help diagnose e.g. permission problems
             echo "haproxy config and generated output file(s):"
-            ls -l "${cfgfile}" "${OUTFILE}" "${OUTFILE}.stderr"
+            ls -l "${HAPROXY_NEW_CONFIG}" "${OUTFILE}" "${OUTFILE}.stderr"
             echo "Current user:"
             id
             test -s "${OUTFILE}" && {
@@ -46,21 +47,21 @@ while [ 1 ]; do
         sleep 1
     done
 
-    if [ ! -s /etc/haproxy/haproxy.cfg.new ]; then
+    if [ ! -s "${OUTFILE}" ]; then
         echo "haproxy config generation failed, giving up"
         exit 1
     fi
 
     changed=0
-    cmp --quiet "${OUTFILE}" "${cfgfile}" || changed=1
+    cmp --quiet "${OUTFILE}" "${HAPROXY_NEW_CONFIG}" || changed=1
     if [ $changed -ne 0 ]; then
-        # As a first step, "move" (really "copy and remove") the file to the same directory to ensure
-        # the next mv will be successful, and atomic.
-        mv "${OUTFILE}" "${cfgfile}.new" && {
+        # If the config has changed, "move" (really "copy and remove") the file to the output directory but
+        # with a temporary name to ensure the next mv will be atomic.
+        mv "${OUTFILE}" "${HAPROXY_NEW_CONFIG}.new" && {
 	    echo "haproxy config changed:";
-	    diff -u "${cfgfile}" "${cfgfile}.new"
+	    diff -u "${HAPROXY_NEW_CONFIG}" "${HAPROXY_NEW_CONFIG}.new"
 	    # this mv will inotify-trigger the autoreload.sh in the haproxy container to reload haproxy
-	    mv "${cfgfile}.new" "${cfgfile}"
+	    mv "${HAPROXY_NEW_CONFIG}.new" "${HAPROXY_NEW_CONFIG}"
         }
     else
 	echo "haproxy config did not change"
