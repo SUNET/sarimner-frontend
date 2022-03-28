@@ -22,6 +22,12 @@ term_handler() {
 
 trap 'kill ${!}; term_handler' SIGTERM
 
+echo "$0: Generating haproxy from registered backends and templates to the file ${HAPROXY_NEW_CONFIG}"
+echo "$0: Current user:"
+id
+echo "$0: Output directory and permissions:"
+find "$(dirname ${HAPROXY_NEW_CONFIG})" -ls
+
 while [ 1 ]; do
     # Generate new haproxy config from templates and API registered backends information into a staging area
     for retry in $(seq 20); do
@@ -58,13 +64,23 @@ while [ 1 ]; do
         # If the config has changed, "move" (really "copy and remove") the file to the output directory but
         # with a temporary name to ensure the next mv will be atomic.
         mv "${OUTFILE}" "${HAPROXY_NEW_CONFIG}.new" && {
-	    echo "haproxy config changed:";
+	    echo "haproxy config changed:"
 	    diff -u "${HAPROXY_NEW_CONFIG}" "${HAPROXY_NEW_CONFIG}.new"
 	    # this mv will inotify-trigger the autoreload.sh in the haproxy container to reload haproxy
 	    mv "${HAPROXY_NEW_CONFIG}.new" "${HAPROXY_NEW_CONFIG}"
         }
     else
 	echo "haproxy config did not change"
+    if [ ! -f "${HAPROXY_NEW_CONFIG}" ]; then
+	sleep 2  # short sleep to let the volume setup job finish first, hopefully
+	echo "Writing initial haproxy configuration to ${HAPROXY_NEW_CONFIG}"
+        # "move" (really "copy and remove") the file to the output directory but
+        # with a temporary name to ensure the next mv will be atomic.
+        mv "${OUTFILE}" "${HAPROXY_NEW_CONFIG}.new" && {
+	    # this mv will inotify-trigger the autoreload.sh in the haproxy container to reload haproxy
+	    mv "${HAPROXY_NEW_CONFIG}.new" "${HAPROXY_NEW_CONFIG}"
+        }
+    fi
     fi
 
     sleep 1  # spin control
