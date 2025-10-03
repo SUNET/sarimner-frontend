@@ -322,20 +322,27 @@ def _load_backends(config, args, logger):
             continue
 
         servers = []
+        backend_config = {}
         be_name = '{}__{}'.format(config['site_name'], be)
         for host, params in config['backends'][be].items():
-            be_ips = params.pop('ips', [])
-            for addr in be_ips:
-                data = _load_backend_data(config['site_name'], addr, args, logger)
-                logger.debug('Backend data for site {} addr {}: {}'.format(config['site_name'], addr, data))
-                if data is None:
-                    logger.debug('Not adding backend {} - probably not registered'.format(addr))
-                    continue
-                params.update(data)
-                servers += [params]
+            if 'ips' in params:
+                # item is a backend
+                be_ips = params.pop('ips', [])
+                for addr in be_ips:
+                    data = _load_backend_data(config['site_name'], addr, args, logger)
+                    logger.debug('Backend data for site {} addr {}: {}'.format(config['site_name'], addr, data))
+                    if data is None:
+                        logger.debug('Not adding backend {} - probably not registered'.format(addr))
+                        continue
+                    params.update(data)
+                    servers += [params]
+            else:
+                # add anything else as config
+                backend_config.update({item: params})
 
         res += [{'name': be_name,
                  'servers': servers,
+                 'config': backend_config,
         }]
     return res
 
