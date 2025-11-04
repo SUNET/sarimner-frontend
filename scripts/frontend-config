@@ -324,7 +324,7 @@ def _load_backends(config, args, logger):
         servers = []
         backend_config = {}
         be_name = '{}__{}'.format(config['site_name'], be)
-        for host, params in config['backends'][be].items():
+        for item, params in config['backends'][be].items():
             if 'ips' in params:
                 # item is a backend
                 be_ips = params.pop('ips', [])
